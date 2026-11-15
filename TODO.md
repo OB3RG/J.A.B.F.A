@@ -14,8 +14,8 @@ This is the actionable work queue. Keep it ordered and update it only after the 
 - [x] Run AT-01 and AT-02 and record that they fail for the expected missing behavior.
 - [x] Implement only enough M1 behavior to satisfy AT-01 and AT-02.
 - [x] Run the full quality gate and review the initial owned data model.
-- [ ] Decide on a license before publishing the repository.
-- [ ] Add CI when a hosted repository/remote is selected.
+- [x] Select the MIT license and add the license file.
+- [x] Add Forgejo Actions CI now that the hosted remote is selected (hosted run pending next push).
 
 ## Next — M1: read-only index core
 
@@ -47,29 +47,36 @@ Write CLI acceptance tests before implementing the remaining `index`/`status` co
 - [x] Write AT-13, then implement content-hash-based add/change/delete indexing.
 - [x] Write AT-14, then implement rename handling and citation/link updates.
 - [x] Write AT-15, then implement debounced atomic watch updates.
-- [ ] Write AT-16, then implement `doctor` for stale entries and broken links.
+- [x] Write AT-16, then implement `doctor` for stale entries and broken links.
 - [x] Test concurrent readers during indexing.
 - [x] Compare incremental query results with clean full rebuilds across mutation sequences.
-- [ ] Publish index-generation semantics and operational recovery documentation.
+- [x] Publish index-generation semantics and operational recovery documentation.
 
 ## M4: MCP adapter
 
-- [ ] Select the maintained Rust MCP SDK and validate it with a minimal protocol test before integration.
-- [ ] Write AT-17, then expose shared `search`, `context`, get, and related operations over stdio MCP.
-- [ ] Add bounded read-only `query_sql` and `index_status` MCP tools.
-- [ ] Write AT-18, then implement protocol-safe validation and resource limits.
-- [ ] Test CLI/MCP semantic equivalence and failure behavior.
-- [ ] Document client registration and security constraints.
+- [x] Select the maintained Rust MCP SDK and validate it with a minimal protocol test before integration.
+- [x] Write AT-17, then expose shared `search`, `context`, get, and related operations over stdio MCP.
+- [x] Add bounded read-only `query_sql` and `index_status` MCP tools.
+- [x] Write AT-18, then implement protocol-safe validation and resource limits.
+- [x] Test CLI/MCP semantic equivalence and failure behavior.
+- [x] Document client registration and security constraints.
 
 ## M5: opt-in structured writes
 
-- [ ] Finalize the source/index transaction and recovery design before implementation.
-- [ ] Write AT-19, then implement validated path/citation and stale-content checks.
-- [ ] Write AT-20, then implement failure recovery and consistency verification.
-- [ ] Add narrow `create_learning` and `patch_section` operations against temporary vault tests.
-- [ ] Add configured catalog/log generation only after source-write safety is proven.
-- [ ] Plan a separate explicit migration for the existing llm-brain workflow.
-- [ ] Never run write acceptance tests against a real user vault.
+- [x] Finalize the source/index transaction and recovery design before implementation.
+- [x] Write AT-19, then implement validated path/citation and stale-content checks.
+- [x] Write AT-20, then implement failure recovery and consistency verification.
+- [x] Add narrow `create_learning` and `patch_section` operations against temporary vault tests.
+- [x] Add configured catalog/log generation only after source-write safety is proven.
+- [x] Plan a separate explicit migration for the existing llm-brain workflow.
+- [x] Never run write acceptance tests against a real user vault (all write tests use temporary directories; keep this invariant).
+
+## Dogfood follow-up — measured retrieval gap
+
+- [x] Add failing regressions for long sections with bold milestone/topic markers and repeated terms, then preserve the snippet-matched passage when truncation is required.
+- [x] Verify citation-supported coverage on long learning pages and prefer durable pages over redundant log-only evidence in the recall agent.
+- [x] Measure a preliminary direct-subagent latency baseline (MCP 65.392 s versus legacy 50.896 s; single run, LLM-dominated, no end-to-end speedup claim).
+- [ ] Obtain provider-reported input/output token totals for equivalent legacy/MCP agent runs before evaluating the 80% target; current token figures are payload estimates.
 
 ## Later — only with measured need
 
@@ -105,3 +112,11 @@ Write CLI acceptance tests before implementing the remaining `index`/`status` co
 - [x] Complete AT-13 incremental add/change/delete and CLI `--full`; all 20 tests and quality gates pass.
 - [x] Complete AT-14 unambiguous identical-content rename identity; all 22 tests and quality gates pass.
 - [x] Complete AT-15 debounced atomic watching, CLI streaming, and concurrent-reader coverage; all 24 tests and quality gates pass.
+- [x] Complete AT-16 doctor diagnostics and M3 operational documentation; all 26 tests and quality gates pass.
+- [x] Select official `rmcp` 3.10 and validate local stdio initialization/tool listing; all 27 tests and quality gates pass.
+- [x] Complete M4 seven-tool stdio MCP adapter, AT-17/AT-18, and client/security documentation; all 30 tests and quality gates pass.
+- [x] Complete M5 validated writes, recovery, generated outputs, CLI opt-in, and migration plan; all 35 tests and quality gates pass.
+- [x] Select MIT and enable the global read-only llm-brain MCP plus brain-recall/brain-scribe integrations with live dogfood verification.
+- [x] Fix dogfood long-section truncation with snippet-anchored excerpts and verify durable-page recall; all 37 tests and quality gates pass.
+- [x] Recover narrow agent-frontmatter compatibility cases and index the full brain with zero diagnostics; all 39 tests and quality gates pass.
+- [x] Add schema-valid brain learning/registry/log writes and complete the real-vault canary; all 43 tests and quality gates pass.

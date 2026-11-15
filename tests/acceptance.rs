@@ -3,7 +3,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -14,9 +14,10 @@ use common::{
     assert_section, basic_vault, malformed_vault, obsidian_vault, retrieval_vault, vault_manifest,
 };
 use jabfa::{
-    IndexConfig, JabfaError, RelatedLimits, SqlQueryLimits, build_context, doctor, get_document,
-    get_section, index_status, index_vault, index_vault_incremental, list_links, parse_markdown,
-    query_sql, related_documents, search_sections, watch_vault,
+    BrainLearningRequest, CreateLearningRequest, IndexConfig, JabfaError, PatchSectionRequest,
+    RelatedLimits, SqlQueryLimits, build_context, create_brain_learning, create_learning, doctor,
+    get_document, get_section, index_status, index_vault, index_vault_incremental, list_links,
+    parse_markdown, patch_section, query_sql, related_documents, search_sections, watch_vault,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -415,6 +416,71 @@ fn at_06_malformed_note_isolated_from_other_documents() {
 }
 
 #[test]
+fn regression_agent_frontmatter_scalar_colons_are_recovered() {
+    let source = "---\ntype: learning\norigin: Dogfood session: MCP retrieval benchmark\ndescription: Recall agent: use indexed evidence first\ntags: [project, mcp]\n---\n# Recoverable metadata\n\nThe indexed body remains searchable.\n";
+    let document =
+        parse_markdown(Path::new("Recovered.md"), source).expect("parse agent-style scalar colons");
+    let frontmatter = document
+        .frontmatter
+        .as_ref()
+        .expect("recovered frontmatter");
+    assert_eq!(
+        frontmatter["origin"],
+        "Dogfood session: MCP retrieval benchmark"
+    );
+    assert_eq!(
+        frontmatter["description"],
+        "Recall agent: use indexed evidence first"
+    );
+    assert!(
+        parse_markdown(
+            Path::new("Broken.md"),
+            include_str!("fixtures/malformed/Broken.md")
+        )
+        .is_err()
+    );
+
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create recovered-frontmatter vault");
+    fs::write(vault.join("Recovered.md"), source).expect("write recovered-frontmatter fixture");
+    let before = vault_manifest(&vault);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    let report = index_vault(&config).expect("index recovered-frontmatter fixture");
+    assert_eq!(report.documents_indexed, 1);
+    assert!(report.diagnostics.is_empty());
+    let results = search_sections(&config, "searchable", 1).expect("search recovered document");
+    assert_eq!(results.results.len(), 1);
+    assert_eq!(results.results[0].path, Path::new("Recovered.md"));
+    assert_eq!(vault_manifest(&vault), before);
+}
+
+#[test]
+fn regression_agent_frontmatter_updated_annotation_is_recovered() {
+    let source = "---\ntype: learning\ncreated: 2026-10-19\nupdated: 2026-10-20 (follow-up: the named entity changed)\norigin: Dogfood session: metadata recovery\ntags: [project]\n---\n# Dated metadata\n\nBody.\n";
+    let document =
+        parse_markdown(Path::new("Dated.md"), source).expect("recover annotated updated field");
+    let frontmatter = document
+        .frontmatter
+        .as_ref()
+        .expect("recovered frontmatter");
+    assert_eq!(frontmatter["updated"], "2026-10-20");
+    assert_eq!(
+        frontmatter["update_note"],
+        "(follow-up: the named entity changed)"
+    );
+    assert_eq!(frontmatter["origin"], "Dogfood session: metadata recovery");
+    assert!(
+        parse_markdown(
+            Path::new("Broken.md"),
+            include_str!("fixtures/malformed/Broken.md")
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn at_07_search_returns_ranked_section_citations() {
     let temp = TempDir::new().expect("create temporary directory");
     let vault = basic_vault(&temp);
@@ -492,6 +558,65 @@ fn at_08_context_respects_budget_and_deduplicates_evidence() {
         oversized.estimated_tokens,
         oversized.context.len().div_ceil(4)
     );
+}
+
+#[test]
+fn regression_context_truncation_preserves_matching_passage() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create long-section vault");
+    let source = format!(
+        "# Long learning\n\n**The finding.** General project context.\n\n{}**Milestone (current setup).** The unique currentmilestone marker and its actionable details must survive truncation.\n",
+        "**Milestone (older).** Earlier implementation details and background consume the section budget.\n\n"
+            .repeat(30)
+    );
+    fs::write(vault.join("Long.md"), source).expect("write long-section fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index long-section fixture");
+
+    let search = search_sections(&config, "currentmilestone", 1).expect("search matching passage");
+    assert_eq!(search.results.len(), 1);
+    assert!(search.results[0].snippet.contains("currentmilestone"));
+    let response = build_context(&config, "currentmilestone", 180).expect("bounded long context");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert_eq!(response.omitted, 0);
+    assert!(response.estimated_tokens <= 180);
+    assert!(response.context.contains("currentmilestone"));
+    assert!(response.context.contains("actionable details"));
+    assert!(response.context.contains('…'));
+    assert!(
+        response
+            .context
+            .contains(&format!("Hash: {}", search.results[0].content_hash))
+    );
+}
+
+#[test]
+fn regression_context_truncation_uses_search_snippet_location() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create repeated-match vault");
+    let source = format!(
+        "# Repeated matches\n\n**Milestone (older).** The license was previously undecided.\n\n{}**Milestone (current).** MIT license setup is complete and the currentsetup details must be retained.\n",
+        "Older implementation background consumes space without the complete query.\n\n".repeat(25)
+    );
+    fs::write(vault.join("Repeated.md"), source).expect("write repeated-match fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index repeated-match fixture");
+
+    let search = search_sections(&config, "license setup", 1).expect("search repeated terms");
+    assert_eq!(search.results.len(), 1);
+    assert!(search.results[0].snippet.contains("currentsetup"));
+    let response =
+        build_context(&config, "license setup", 180).expect("bounded repeated-match context");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 180);
+    assert!(response.context.contains("MIT license setup"));
+    assert!(response.context.contains("currentsetup"));
 }
 
 #[test]
@@ -1633,10 +1758,17 @@ fn m3_cli_watch_streams_committed_json_reports() {
 #[test]
 fn at_16_doctor_detects_staleness_and_broken_links() {
     let temp = TempDir::new().expect("create temporary directory");
-    let basic = basic_vault(&temp);
-    let basic_database = temp.path().join("basic.sqlite3");
-    index_vault(&IndexConfig::new(&basic, &basic_database)).expect("index healthy vault");
-    let healthy = doctor(&IndexConfig::new(&basic, &basic_database)).expect("doctor healthy vault");
+    let healthy_vault = temp.path().join("healthy-vault");
+    fs::create_dir(&healthy_vault).expect("create healthy vault");
+    fs::write(
+        healthy_vault.join("Healthy.md"),
+        "# Healthy\n\nNo unresolved links.\n",
+    )
+    .expect("write healthy note");
+    let healthy_database = temp.path().join("healthy.sqlite3");
+    index_vault(&IndexConfig::new(&healthy_vault, &healthy_database)).expect("index healthy vault");
+    let healthy =
+        doctor(&IndexConfig::new(&healthy_vault, &healthy_database)).expect("doctor healthy vault");
     assert!(healthy.healthy);
     assert!(healthy.diagnostics.is_empty());
 
@@ -1727,6 +1859,633 @@ fn m3_cli_doctor_json_and_human_output() {
     assert!(stdout.contains("Generation 1: 2 diagnostics."));
     assert!(stdout.contains("Home.md\tbroken_link"));
     assert!(stdout.contains("Home.md\tambiguous_link"));
+}
+
+#[test]
+fn at_19_structured_write_rejects_stale_or_outside_root_changes() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = basic_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index write-safety fixture");
+    let before_vault = vault_manifest(&vault);
+    let before_index = {
+        let connection = Connection::open(&database).expect("open write-safety index");
+        normalized_index_snapshot(&connection)
+    };
+
+    let outside = temp.path().join("outside.md");
+    let traversal = create_learning(
+        &config,
+        &CreateLearningRequest {
+            path: PathBuf::from("../outside.md"),
+            title: "Outside".to_owned(),
+            body: "Must not be written.".to_owned(),
+            tags: Vec::new(),
+        },
+    );
+    assert!(matches!(traversal, Err(JabfaError::PathOutsideVault(_))));
+    assert!(!outside.exists());
+
+    let raw = create_learning(
+        &config,
+        &CreateLearningRequest {
+            path: PathBuf::from("raw/learning.md"),
+            title: "Raw".to_owned(),
+            body: "Must not be written.".to_owned(),
+            tags: Vec::new(),
+        },
+    );
+    assert!(matches!(raw, Err(JabfaError::ImmutableRawPath(_))));
+
+    let stale = patch_section(
+        &config,
+        &PatchSectionRequest {
+            path: PathBuf::from("frontmatter.md"),
+            start_line: 13,
+            end_line: 23,
+            expected_hash: "0".repeat(64),
+            replacement: "## Search\n\nMust not be written.\n".to_owned(),
+        },
+    );
+    assert!(matches!(stale, Err(JabfaError::StaleCitation { .. })));
+
+    let missing = patch_section(
+        &config,
+        &PatchSectionRequest {
+            path: PathBuf::from("Missing.md"),
+            start_line: 1,
+            end_line: 2,
+            expected_hash: "0".repeat(64),
+            replacement: "# Missing\n".to_owned(),
+        },
+    );
+    assert!(matches!(missing, Err(JabfaError::DocumentNotFound(_))));
+
+    assert_eq!(vault_manifest(&vault), before_vault, "source vault changed");
+    assert_eq!(
+        index_status(&config)
+            .expect("status after rejects")
+            .generation,
+        1
+    );
+    let connection = Connection::open(&database).expect("open unchanged write-safety index");
+    assert_eq!(normalized_index_snapshot(&connection), before_index);
+}
+
+#[test]
+fn m5_create_learning_and_patch_section_use_temporary_vaults() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = basic_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let full_database = temp.path().join("full.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index structured-write fixture");
+
+    let created = create_learning(
+        &config,
+        &CreateLearningRequest {
+            path: PathBuf::from("learnings/local-first.md"),
+            title: "Local first".to_owned(),
+            body: "A deterministic learning body.".to_owned(),
+            tags: vec!["rust".to_owned(), "testing".to_owned()],
+        },
+    )
+    .expect("create learning in temporary vault");
+    assert_eq!(created.output_schema_version, 1);
+    assert_eq!(created.generation, 2);
+    assert_eq!(created.path, Path::new("learnings/local-first.md"));
+    let created_path = vault.join("learnings/local-first.md");
+    let created_source = fs::read_to_string(&created_path).expect("read created learning");
+    assert!(created_source.contains("title: \"Local first\""));
+    assert!(created_source.contains("- \"rust\""));
+    assert!(created_source.contains("# Local first\n\nA deterministic learning body."));
+    assert_eq!(created.bytes, created_source.len());
+    assert_eq!(
+        created.content_hash,
+        blake3::hash(created_source.as_bytes()).to_hex().to_string()
+    );
+    let found = search_sections(&config, "deterministic", 10).expect("search created learning");
+    let citation = found
+        .results
+        .iter()
+        .find(|result| result.path == Path::new("learnings/local-first.md"))
+        .expect("created learning citation");
+
+    let patched = patch_section(
+        &config,
+        &PatchSectionRequest {
+            path: citation.path.clone(),
+            start_line: citation.start_line,
+            end_line: citation.end_line,
+            expected_hash: citation.content_hash.clone(),
+            replacement: "# Local first\n\nRevised body with patchedmarker.\n".to_owned(),
+        },
+    )
+    .expect("patch indexed learning section");
+    assert_eq!(patched.generation, 3);
+    let patched_source = fs::read_to_string(&created_path).expect("read patched learning");
+    assert!(patched_source.contains("Revised body with patchedmarker."));
+    assert!(!patched_source.contains("A deterministic learning body."));
+    assert_eq!(
+        patched.content_hash,
+        blake3::hash(patched_source.as_bytes()).to_hex().to_string()
+    );
+    let results = search_sections(&config, "patchedmarker", 10).expect("search patched learning");
+    assert_eq!(results.results.len(), 1);
+    assert_eq!(
+        results.results[0].path,
+        Path::new("learnings/local-first.md")
+    );
+
+    let before_stale = patched_source.clone();
+    let stale = patch_section(
+        &config,
+        &PatchSectionRequest {
+            path: citation.path.clone(),
+            start_line: citation.start_line,
+            end_line: citation.end_line,
+            expected_hash: citation.content_hash.clone(),
+            replacement: "# Local first\n\nStale overwrite.\n".to_owned(),
+        },
+    );
+    assert!(matches!(stale, Err(JabfaError::StaleCitation { .. })));
+    assert_eq!(
+        fs::read_to_string(&created_path).expect("read after stale patch"),
+        before_stale
+    );
+    assert_incremental_matches_full(&vault, &database, &full_database);
+}
+
+#[test]
+fn m5_configured_catalog_and_log_generation() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = basic_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let full_database = temp.path().join("full.sqlite3");
+    let config = IndexConfig::new(&vault, &database).with_generated_outputs(
+        Some(PathBuf::from("Catalog.md")),
+        Some(PathBuf::from("Log.md")),
+    );
+    index_vault(&config).expect("index generated-output fixture");
+
+    let response = create_learning(
+        &config,
+        &CreateLearningRequest {
+            path: PathBuf::from("learnings/indexed.md"),
+            title: "Indexed learning".to_owned(),
+            body: "Catalog generation test body.".to_owned(),
+            tags: vec!["testing".to_owned()],
+        },
+    )
+    .expect("create learning with generated outputs");
+    assert_eq!(response.generation, 4);
+    assert_eq!(response.path, Path::new("learnings/indexed.md"));
+    let catalog = fs::read_to_string(vault.join("Catalog.md")).expect("read generated catalog");
+    assert!(catalog.starts_with("# Learning catalog\n\n"));
+    assert!(catalog.contains("- [[learnings/indexed]] — Indexed learning\n"));
+    let log = fs::read_to_string(vault.join("Log.md")).expect("read generated log");
+    assert!(log.starts_with("# Learning log\n\n"));
+    assert!(log.contains("- `learnings/indexed.md` — Indexed learning\n"));
+    let links = list_links(&config, Path::new("Catalog.md"), 10).expect("catalog links");
+    assert_eq!(links.links.len(), 1);
+    assert_eq!(links.links[0].resolution, "resolved");
+    assert_eq!(
+        links.links[0].target_path.as_deref(),
+        Some(Path::new("learnings/indexed.md"))
+    );
+    assert_incremental_matches_full(&vault, &database, &full_database);
+}
+
+#[test]
+fn m5_cli_structured_writes_require_explicit_opt_in() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = basic_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index CLI write fixture");
+    let before = vault_manifest(&vault);
+    let learning = PathBuf::from("learnings/cli.md");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("create-learning")
+        .arg(&vault)
+        .arg(&learning)
+        .arg("--database")
+        .arg(&database)
+        .arg("--title")
+        .arg("CLI learning")
+        .arg("--body")
+        .arg("CLI write body")
+        .arg("--json")
+        .output()
+        .expect("run write without opt-in");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        vault_manifest(&vault),
+        before,
+        "write without opt-in changed vault"
+    );
+    assert!(!vault.join(&learning).exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("create-learning")
+        .arg(&vault)
+        .arg(&learning)
+        .arg("--database")
+        .arg(&database)
+        .arg("--title")
+        .arg("CLI learning")
+        .arg("--body")
+        .arg("CLI write body with clilearningmarker")
+        .arg("--tag")
+        .arg("testing")
+        .arg("--allow-write")
+        .arg("--json")
+        .output()
+        .expect("run opted-in CLI create");
+    assert!(
+        output.status.success(),
+        "create stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let created: serde_json::Value = serde_json::from_slice(&output.stdout).expect("create JSON");
+    assert_object_fields(
+        &created,
+        &[
+            "bytes",
+            "content_hash",
+            "generation",
+            "output_schema_version",
+            "path",
+        ],
+    );
+    assert_eq!(created["generation"], 2);
+    assert_eq!(created["path"], "learnings/cli.md");
+
+    let found = search_sections(&config, "clilearningmarker", 1).expect("CLI write citation");
+    let citation = &found.results[0];
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("patch-section")
+        .arg(&vault)
+        .arg(&citation.path)
+        .arg("--database")
+        .arg(&database)
+        .arg("--start-line")
+        .arg(citation.start_line.to_string())
+        .arg("--end-line")
+        .arg(citation.end_line.to_string())
+        .arg("--expected-hash")
+        .arg(&citation.content_hash)
+        .arg("--replacement")
+        .arg("# CLI learning\n\nPatched by CLI with clipatchmarker.\n")
+        .arg("--allow-write")
+        .arg("--json")
+        .output()
+        .expect("run opted-in CLI patch");
+    assert!(
+        output.status.success(),
+        "patch stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let patched: serde_json::Value = serde_json::from_slice(&output.stdout).expect("patch JSON");
+    assert_eq!(patched["generation"], 3);
+    assert_eq!(patched["path"], "learnings/cli.md");
+    assert!(
+        fs::read_to_string(vault.join(&learning))
+            .expect("read CLI patched note")
+            .contains("clipatchmarker")
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("create-learning")
+        .arg(&vault)
+        .arg("learnings/human.md")
+        .arg("--database")
+        .arg(&database)
+        .arg("--title")
+        .arg("Human write")
+        .arg("--body")
+        .arg("Human output body")
+        .arg("--allow-write")
+        .output()
+        .expect("run human CLI create");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("human create stdout"),
+        "Created learnings/human.md in generation 4 (71 bytes).\n"
+    );
+}
+
+#[test]
+fn brain_structured_write_matches_schema_and_registry_contract() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki/learnings")).expect("create brain fixture directories");
+    fs::write(
+        vault.join("wiki/index.md"),
+        "# Index\n\n## Learnings\n\n- [[existing-learning]] — Existing learning (2026-01-01)\n\n## Entities\n\n- [[Existing]] — Existing entity (2026-01-01)\n",
+    )
+    .expect("write brain index fixture");
+    fs::write(
+        vault.join("wiki/log.md"),
+        "# Log\n\n## [2026-01-01] learn | Existing learning\n\n- Existing log bullet.\n",
+    )
+    .expect("write brain log fixture");
+    let database = temp.path().join("index.sqlite3");
+    let full_database = temp.path().join("full.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index brain-write fixture");
+
+    let response = create_brain_learning(
+        &config,
+        &BrainLearningRequest {
+            path: PathBuf::from("wiki/learnings/2026-11-16-write-canary.md"),
+            title: "Structured Write Canary".to_owned(),
+            finding: "Structured writes can create valid learning records.".to_owned(),
+            context: "A temporary vault canary exercised the complete workflow.".to_owned(),
+            consequences: "Use the narrow operation for future learning creation.".to_owned(),
+            origin: "Test session: structured brain writes".to_owned(),
+            created: "2026-11-16".to_owned(),
+            tags: vec!["project".to_owned(), "dogfood".to_owned()],
+        },
+    )
+    .expect("create schema-valid brain learning");
+    assert_eq!(response.generation, 4);
+    let note = fs::read_to_string(vault.join("wiki/learnings/2026-11-16-write-canary.md"))
+        .expect("read brain canary");
+    assert!(note.contains("type: learning"));
+    assert!(note.contains("created: 2026-11-16"));
+    assert!(note.contains("updated: 2026-11-16"));
+    assert!(note.contains("origin: \"Test session: structured brain writes\""));
+    assert!(note.contains("**The finding.** Structured writes can create valid learning records."));
+    assert!(
+        note.contains("**Context.** A temporary vault canary exercised the complete workflow.")
+    );
+    assert!(
+        note.contains("**Consequences.** Use the narrow operation for future learning creation.")
+    );
+    let index = fs::read_to_string(vault.join("wiki/index.md")).expect("read updated brain index");
+    assert!(index.contains("- [[2026-11-16-write-canary]] — Structured writes can create valid learning records. (2026-11-16)"));
+    let learnings = index
+        .split("## Learnings")
+        .nth(1)
+        .expect("learnings section");
+    assert!(
+        learnings
+            .split("## Entities")
+            .next()
+            .expect("learning entries")
+            .contains("write-canary")
+    );
+    let log = fs::read_to_string(vault.join("wiki/log.md")).expect("read updated brain log");
+    assert!(log.contains("## [2026-11-16] learn | Structured Write Canary"));
+    assert!(log.contains("- Structured writes can create valid learning records."));
+    assert!(log.ends_with("- Updated `wiki/learnings/2026-11-16-write-canary.md`, `wiki/index.md`, and `wiki/log.md`.\n"));
+    assert_incremental_matches_full(&vault, &database, &full_database);
+}
+
+#[test]
+fn brain_structured_write_preserves_following_section_spacing() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki/learnings")).expect("create spacing fixture directories");
+    fs::write(
+        vault.join("wiki/index.md"),
+        "# Index\n\n## Learnings\n\n- [[existing-learning]] — Existing learning (2026-01-01)\n\n## Entities\n\n- [[Existing]] — Existing entity (2026-01-01)\n",
+    )
+    .expect("write spacing index fixture");
+    fs::write(vault.join("wiki/log.md"), "# Log\n").expect("write spacing log fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index spacing fixture");
+    create_brain_learning(
+        &config,
+        &BrainLearningRequest {
+            path: PathBuf::from("wiki/learnings/2026-11-16-spacing.md"),
+            title: "Spacing".to_owned(),
+            finding: "Section spacing must remain intact.".to_owned(),
+            context: "A following category heading exercises the boundary.".to_owned(),
+            consequences: "Keep a blank line after inserted entries.".to_owned(),
+            origin: "Test session: spacing".to_owned(),
+            created: "2026-11-16".to_owned(),
+            tags: Vec::new(),
+        },
+    )
+    .expect("create spacing learning");
+    let index = fs::read_to_string(vault.join("wiki/index.md")).expect("read spacing index");
+    assert!(index.contains("(2026-11-16)\n\n## Entities"));
+}
+
+#[test]
+fn brain_structured_write_preflights_registry_before_writing() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki/learnings")).expect("create brain preflight directories");
+    fs::write(
+        vault.join("wiki/index.md"),
+        "# Index\n\n## Learnings\n\n- [[existing-learning]] — Existing learning (2026-01-01)\n",
+    )
+    .expect("write preflight index fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index preflight fixture");
+    let before_index =
+        fs::read_to_string(vault.join("wiki/index.md")).expect("read preflight index");
+
+    let result = create_brain_learning(
+        &config,
+        &BrainLearningRequest {
+            path: PathBuf::from("wiki/learnings/2026-11-16-no-write.md"),
+            title: "No Partial Write".to_owned(),
+            finding: "Missing registries must fail before a source commit.".to_owned(),
+            context: "The log is deliberately absent.".to_owned(),
+            consequences: "No learning or index entry should be created.".to_owned(),
+            origin: "Test session: preflight".to_owned(),
+            created: "2026-11-16".to_owned(),
+            tags: Vec::new(),
+        },
+    );
+    assert!(matches!(result, Err(JabfaError::DocumentNotFound(_))));
+    assert!(!vault.join("wiki/learnings/2026-11-16-no-write.md").exists());
+    assert_eq!(
+        fs::read_to_string(vault.join("wiki/index.md")).expect("read unchanged index"),
+        before_index
+    );
+    assert_eq!(
+        index_status(&config)
+            .expect("preflight generation")
+            .generation,
+        1
+    );
+}
+
+#[test]
+fn brain_cli_structured_write_requires_opt_in() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki/learnings")).expect("create brain CLI directories");
+    fs::write(
+        vault.join("wiki/index.md"),
+        "# Index\n\n## Learnings\n\n- [[existing-learning]] — Existing learning (2026-01-01)\n",
+    )
+    .expect("write brain CLI index");
+    fs::write(vault.join("wiki/log.md"), "# Log\n").expect("write brain CLI log");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index brain CLI fixture");
+    let learning = PathBuf::from("wiki/learnings/2026-11-16-cli-canary.md");
+    let before = vault_manifest(&vault);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("brain-create-learning")
+        .arg(&vault)
+        .arg(&learning)
+        .arg("--database")
+        .arg(&database)
+        .arg("--title")
+        .arg("CLI Canary")
+        .arg("--finding")
+        .arg("CLI creation works.")
+        .arg("--context")
+        .arg("Temporary fixture.")
+        .arg("--consequences")
+        .arg("Use the structured command.")
+        .arg("--origin")
+        .arg("Test session: CLI")
+        .arg("--created")
+        .arg("2026-11-16")
+        .output()
+        .expect("run brain write without opt-in");
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(vault_manifest(&vault), before);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("brain-create-learning")
+        .arg(&vault)
+        .arg(&learning)
+        .arg("--database")
+        .arg(&database)
+        .arg("--title")
+        .arg("CLI Canary")
+        .arg("--finding")
+        .arg("CLI creation works.")
+        .arg("--context")
+        .arg("Temporary fixture.")
+        .arg("--consequences")
+        .arg("Use the structured command.")
+        .arg("--origin")
+        .arg("Test session: CLI")
+        .arg("--created")
+        .arg("2026-11-16")
+        .arg("--tag")
+        .arg("dogfood")
+        .arg("--allow-write")
+        .arg("--json")
+        .output()
+        .expect("run opted-in brain CLI write");
+    assert!(
+        output.status.success(),
+        "brain CLI stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("brain write JSON");
+    assert_eq!(response["generation"], 4);
+    assert_eq!(response["path"], "wiki/learnings/2026-11-16-cli-canary.md");
+    assert_eq!(response["output_schema_version"], 1);
+    let log = fs::read_to_string(vault.join("wiki/log.md")).expect("read brain CLI log");
+    assert!(log.contains("## [2026-11-16] learn | CLI Canary"));
+}
+
+#[test]
+fn at_20_failed_write_has_consistent_recovery_behavior() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = basic_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let recovery_database = database.clone();
+    let full_database = temp.path().join("full.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index recovery fixture");
+    let found = search_sections(&config, "relevant", 1).expect("recovery citation search");
+    let citation = &found.results[0];
+
+    let index_lock = Connection::open(&database).expect("open index lock connection");
+    index_lock
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold index write lock");
+    let failure = patch_section(
+        &config,
+        &PatchSectionRequest {
+            path: citation.path.clone(),
+            start_line: citation.start_line,
+            end_line: citation.end_line,
+            expected_hash: citation.content_hash.clone(),
+            replacement: "## Search\n\nRecovered source body with recoverymarker.\n".to_owned(),
+        },
+    );
+    assert!(matches!(
+        failure,
+        Err(JabfaError::WriteRecoveryRequired { .. })
+    ));
+    drop(index_lock);
+    let source = fs::read_to_string(vault.join("frontmatter.md")).expect("read committed source");
+    assert!(source.contains("Recovered source body with recoverymarker."));
+    assert!(!source.contains("Find the **relevant** section."));
+
+    let recovery = IndexConfig::new(&vault, &recovery_database);
+    let before_recovery = doctor(&recovery).expect("diagnose index fault");
+    assert!(
+        before_recovery
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "changed"
+                && diagnostic.path == Path::new("frontmatter.md"))
+    );
+    index_vault_incremental(&recovery).expect("recover committed source into index");
+    let after_recovery = doctor(&recovery).expect("verify recovered index");
+    assert!(
+        after_recovery
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.kind != "changed")
+    );
+    let results = search_sections(&recovery, "recoverymarker", 1).expect("search recovered source");
+    assert_eq!(results.results.len(), 1);
+    assert_incremental_matches_full(&vault, &recovery_database, &full_database);
+
+    let source_temp = TempDir::new().expect("create source-failure directory");
+    let source_vault = basic_vault(&source_temp);
+    let source_database = source_temp.path().join("source.sqlite3");
+    let source_config = IndexConfig::new(&source_vault, &source_database);
+    index_vault(&source_config).expect("index source-failure fixture");
+    let found = search_sections(&source_config, "Markdown", 1).expect("source-failure citation");
+    let citation = &found.results[0];
+    fs::remove_file(source_vault.join("plain.md")).expect("remove source for fault");
+    fs::create_dir(source_vault.join("plain.md")).expect("inject source-path failure");
+    let before_fault = vault_manifest(&source_vault);
+    let failure = patch_section(
+        &source_config,
+        &PatchSectionRequest {
+            path: citation.path.clone(),
+            start_line: citation.start_line,
+            end_line: citation.end_line,
+            expected_hash: citation.content_hash.clone(),
+            replacement: "# Details\n\nMust not commit.\n".to_owned(),
+        },
+    );
+    assert!(matches!(failure, Err(JabfaError::Io { .. })));
+    assert_eq!(vault_manifest(&source_vault), before_fault);
+    assert_eq!(
+        index_status(&source_config)
+            .expect("source-failure index status")
+            .generation,
+        1
+    );
 }
 
 #[test]

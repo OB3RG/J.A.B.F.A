@@ -27,14 +27,7 @@ pub fn parse_markdown(path: &Path, source: &str) -> Result<ParsedDocument> {
     let raw_frontmatter = frontmatter_end.map(|end| lines[1..end - 1].join("\n"));
     let frontmatter = match raw_frontmatter {
         Some(raw) if raw.trim().is_empty() => None,
-        Some(raw) => {
-            Some(
-                serde_yaml::from_str(&raw).map_err(|source| JabfaError::Frontmatter {
-                    path: path.to_path_buf(),
-                    source,
-                })?,
-            )
-        }
+        Some(raw) => Some(parse_frontmatter(path, &raw)?),
         None => None,
     };
 
@@ -99,6 +92,76 @@ pub fn parse_markdown(path: &Path, source: &str) -> Result<ParsedDocument> {
         links: analysis.links,
         sections,
     })
+}
+
+fn parse_frontmatter(path: &Path, raw: &str) -> Result<Value> {
+    match serde_yaml::from_str(raw) {
+        Ok(value) => Ok(value),
+        Err(source) => {
+            let Some(recovered) = recover_agent_scalar_colons(raw)? else {
+                return Err(JabfaError::Frontmatter {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            };
+            serde_yaml::from_str(&recovered).map_err(|_| JabfaError::Frontmatter {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    }
+}
+
+fn recover_agent_scalar_colons(raw: &str) -> Result<Option<String>> {
+    let mut recovered = String::with_capacity(raw.len());
+    let mut changed = false;
+    for (index, line) in raw.split('\n').enumerate() {
+        if index > 0 {
+            recovered.push('\n');
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            recovered.push_str(line);
+            continue;
+        };
+        let value = value.trim();
+        if key == "updated"
+            && let Some((date, note)) = value.split_once(' ')
+            && is_iso_date_prefix(date)
+            && note.starts_with('(')
+            && note.ends_with(')')
+        {
+            recovered.push_str("updated: ");
+            recovered.push_str(date);
+            recovered.push_str("\nupdate_note: ");
+            recovered.push_str(&serde_json::to_string(note)?);
+            changed = true;
+            continue;
+        }
+        let recoverable = matches!(key, "origin" | "description")
+            && !value.is_empty()
+            && !value.starts_with(['\'', '"', '[', '{'])
+            && value.contains(": ");
+        if recoverable {
+            recovered.push_str(key);
+            recovered.push_str(": ");
+            recovered.push_str(&serde_json::to_string(value)?);
+            changed = true;
+        } else {
+            recovered.push_str(line);
+        }
+    }
+    Ok(changed.then_some(recovered))
+}
+
+fn is_iso_date_prefix(value: &str) -> bool {
+    value.len() == 10
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 4 | 7) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit()
+            }
+        })
 }
 
 fn frontmatter_end_line(lines: &[&str]) -> Option<usize> {

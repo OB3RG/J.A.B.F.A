@@ -17,6 +17,8 @@ const IGNORED_DIRECTORIES: [&str; 3] = [".git", ".obsidian", ".jabfa"];
 pub struct IndexConfig {
     pub(crate) vault_root: PathBuf,
     pub(crate) database_path: PathBuf,
+    pub(crate) generated_catalog_path: Option<PathBuf>,
+    pub(crate) generated_log_path: Option<PathBuf>,
 }
 
 impl IndexConfig {
@@ -24,7 +26,20 @@ impl IndexConfig {
         Self {
             vault_root: vault_root.as_ref().to_path_buf(),
             database_path: database_path.as_ref().to_path_buf(),
+            generated_catalog_path: None,
+            generated_log_path: None,
         }
+    }
+
+    /// Configure optional generated catalog and learning-log Markdown paths.
+    pub fn with_generated_outputs(
+        mut self,
+        catalog_path: Option<PathBuf>,
+        log_path: Option<PathBuf>,
+    ) -> Self {
+        self.generated_catalog_path = catalog_path;
+        self.generated_log_path = log_path;
+        self
     }
 }
 
@@ -253,6 +268,11 @@ fn document_diagnostic(path: &Path, error: JabfaError) -> IndexDiagnostic {
         | JabfaError::SqlRowLimitExceeded { .. }
         | JabfaError::SqlByteLimitExceeded { .. }
         | JabfaError::SqlQueryTimeout
+        | JabfaError::ImmutableRawPath(_)
+        | JabfaError::InvalidWriteInput(_)
+        | JabfaError::DestinationExists(_)
+        | JabfaError::StaleCitation { .. }
+        | JabfaError::WriteRecoveryRequired { .. }
         | JabfaError::Watch(_)
         | JabfaError::Json(_) => "other",
     };

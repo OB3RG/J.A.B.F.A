@@ -69,12 +69,12 @@ pub fn build_context(
         }
 
         if response.included == 0 {
-            let suffix = "…\n";
+            let suffix = "\n";
             let available = max_tokens
                 .saturating_mul(4)
                 .saturating_sub(citation.len() + suffix.len());
             if available > 0 {
-                let shortened = truncate_utf8(&text, available);
+                let shortened = truncate_to_match(&text, available, query, &result.snippet);
                 response.context = format!("{citation}{shortened}{suffix}");
                 response.included += 1;
                 response.truncated += 1;
@@ -115,6 +115,76 @@ fn append_block(context: &str, block: &str) -> String {
 
 fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
+}
+
+fn truncate_to_match(text: &str, available_bytes: usize, query: &str, snippet: &str) -> String {
+    const MARKER: &str = "…";
+    if text.len() <= available_bytes {
+        return text.to_owned();
+    }
+    if available_bytes <= MARKER.len() {
+        return truncate_utf8(text, available_bytes).to_owned();
+    }
+
+    let Some(match_start) = find_query_match(text, query, snippet) else {
+        let shortened = truncate_utf8(text, available_bytes - MARKER.len());
+        return format!("{shortened}{MARKER}");
+    };
+    if available_bytes <= 2 * MARKER.len() {
+        let shortened = truncate_utf8(text, available_bytes - MARKER.len());
+        return format!("{shortened}{MARKER}");
+    }
+
+    // Reserve both markers so the returned excerpt stays within budget even
+    // when the matching passage is in the middle of the section.
+    let content_budget = available_bytes - 2 * MARKER.len();
+    let mut start = match_start
+        .saturating_sub(content_budget / 2)
+        .min(text.len().saturating_sub(content_budget));
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (start + content_budget).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = if start > 0 { MARKER } else { "" };
+    let suffix = if end < text.len() { MARKER } else { "" };
+    format!("{prefix}{}{suffix}", &text[start..end])
+}
+
+fn find_query_match(text: &str, query: &str, snippet: &str) -> Option<usize> {
+    let mut fragments = snippet
+        .split('…')
+        .map(str::trim)
+        .filter(|fragment| !fragment.is_empty())
+        .collect::<Vec<_>>();
+    fragments.sort_by_key(|fragment| std::cmp::Reverse(fragment.len()));
+    for fragment in fragments {
+        if let Some(index) = text.find(fragment) {
+            return Some(index);
+        }
+    }
+
+    let mut terms = query
+        .split_whitespace()
+        .map(|term| term.trim_matches(|character: char| !character.is_alphanumeric()))
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    terms.sort_by_key(|term| std::cmp::Reverse(term.len()));
+    terms.dedup();
+    for term in terms {
+        if let Some(index) = text.find(term) {
+            return Some(index);
+        }
+        let lowered_text = text.to_lowercase();
+        if lowered_text.len() == text.len()
+            && let Some(index) = lowered_text.find(&term.to_lowercase())
+        {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn truncate_utf8(text: &str, available_bytes: usize) -> &str {

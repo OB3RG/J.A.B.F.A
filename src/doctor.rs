@@ -56,7 +56,10 @@ pub fn doctor(config: &IndexConfig) -> Result<DoctorResponse> {
                 diagnostics.push(diagnostic(
                     &path,
                     "io",
-                    format!("cannot read indexed source: {}", io_error(&full_path, error)),
+                    format!(
+                        "cannot read indexed source: {}",
+                        io_error(&full_path, error)
+                    ),
                 ));
                 continue;
             }

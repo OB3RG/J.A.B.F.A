@@ -66,6 +66,7 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
         .query_map(rusqlite::params![query, limit], |row| {
             let path: String = row.get(0)?;
             let heading_path: String = row.get(1)?;
+            let score: f64 = row.get(5)?;
             Ok(SearchResult {
                 section_id: row.get(7)?,
                 path: PathBuf::from(path),
@@ -77,7 +78,7 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
                 start_line: row.get(2)?,
                 end_line: row.get(3)?,
                 content_hash: row.get(4)?,
-                score: row.get(5)?,
+                score: canonical_score(score),
                 snippet: row.get(6)?,
             })
         })?
@@ -88,6 +89,10 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
         generation,
         results,
     })
+}
+
+fn canonical_score(score: f64) -> f64 {
+    format!("{score:.12e}").parse().unwrap_or(score)
 }
 
 pub(crate) fn read_generation(connection: &Connection) -> Result<i64> {

@@ -336,7 +336,7 @@ fn ensure_document(connection: &Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn safe_relative_path(path: &Path) -> Result<PathBuf> {
+pub(crate) fn safe_relative_path(path: &Path) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     for component in path.components() {
         match component {
@@ -353,7 +353,7 @@ fn safe_relative_path(path: &Path) -> Result<PathBuf> {
     Ok(safe)
 }
 
-fn read_source(config: &IndexConfig, path: &Path) -> Result<String> {
+pub(crate) fn read_source(config: &IndexConfig, path: &Path) -> Result<String> {
     if !config.vault_root.is_dir() {
         return Err(JabfaError::InvalidVaultRoot(config.vault_root.clone()));
     }
@@ -361,7 +361,7 @@ fn read_source(config: &IndexConfig, path: &Path) -> Result<String> {
         .map_err(|error| io_error(&config.vault_root, error))?;
     let full_path = config.vault_root.join(path);
     let canonical = fs::canonicalize(&full_path).map_err(|error| io_error(&full_path, error))?;
-    if !canonical.starts_with(&root) || !canonical.is_file() {
+    if !canonical.starts_with(&root) {
         return Err(JabfaError::PathOutsideVault(path.to_path_buf()));
     }
     fs::read_to_string(&canonical).map_err(|error| io_error(canonical, error))

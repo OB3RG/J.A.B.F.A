@@ -71,6 +71,31 @@ pub enum JabfaError {
     #[error("SQL query exceeded its execution-time limit")]
     SqlQueryTimeout,
 
+    #[error("write path is in immutable raw storage: {0}")]
+    ImmutableRawPath(PathBuf),
+
+    #[error("invalid structured write input: {0}")]
+    InvalidWriteInput(String),
+
+    #[error("write destination already exists: {0}")]
+    DestinationExists(PathBuf),
+
+    #[error("stale section citation for {path} lines {start_line}-{end_line}")]
+    StaleCitation {
+        path: PathBuf,
+        start_line: usize,
+        end_line: usize,
+    },
+
+    #[error(
+        "source committed at {path} with hash {source_hash}, but indexing requires recovery: {message}"
+    )]
+    WriteRecoveryRequired {
+        path: PathBuf,
+        source_hash: String,
+        message: String,
+    },
+
     #[error("filesystem watcher error: {0}")]
     Watch(String),
 

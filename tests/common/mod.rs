@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Integration-test binaries intentionally use different helper subsets.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -186,7 +186,7 @@ The initial pipeline is deterministic:
 5. Select evidence within the configured budget.
 6. Return citations and index-generation metadata.
 
-The initial context budget uses a deterministic conservative estimator: `ceil(UTF-8 bytes / 4)` over the complete Markdown evidence payload, including citations and separators. The JSON transport envelope is reported separately from this evidence-budget number. Exact normalized-text duplicates are removed before selection; budget-limited results are counted as omitted; and an oversized first section keeps its full citation while its body is truncated at a UTF-8 boundary with an ellipsis.
+The initial context budget uses a deterministic conservative estimator: `ceil(UTF-8 bytes / 4)` over the complete Markdown evidence payload, including citations and separators. The JSON transport envelope is reported separately from this evidence-budget number. Exact normalized-text duplicates are removed before selection; budget-limited results are counted as omitted; and an oversized first section keeps its full citation while its body is truncated at a UTF-8 boundary with ellipses. When a search match would otherwise be truncated away, the excerpt is anchored to the search snippet's exact fragment, falling back to the longest matching query term and then the section start.
 
 Embeddings are a later optional ranking signal, not an MVP dependency.
 

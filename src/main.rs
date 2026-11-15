@@ -7,9 +7,11 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use jabfa::{
-    IndexConfig, IndexReport, JabfaError, RelatedLimits, Result, SqlQueryLimits, build_context,
-    doctor, get_document, get_section, index_status, index_vault, index_vault_incremental, list_links,
-    query_sql, related_documents, search_sections, watch_vault,
+    BrainLearningRequest, CreateLearningRequest, IndexConfig, IndexReport, JabfaError,
+    PatchSectionRequest, RelatedLimits, Result, SqlQueryLimits, build_context,
+    create_brain_learning, create_learning, doctor, get_document, get_section, index_status,
+    index_vault, index_vault_incremental, list_links, patch_section, query_sql, related_documents,
+    search_sections, watch_vault,
 };
 
 #[derive(Debug, Parser)]
@@ -110,6 +112,71 @@ enum Command {
         max_nodes: usize,
         #[arg(long, default_value_t = 65_536)]
         max_bytes: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a schema-valid llm-brain learning and update its registry/log.
+    BrainCreateLearning {
+        vault: PathBuf,
+        path: PathBuf,
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        finding: String,
+        #[arg(long)]
+        context: String,
+        #[arg(long)]
+        consequences: String,
+        #[arg(long)]
+        origin: String,
+        #[arg(long)]
+        created: String,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long, required = true)]
+        allow_write: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create a structured learning note; requires explicit write opt-in.
+    CreateLearning {
+        vault: PathBuf,
+        path: PathBuf,
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: String,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long)]
+        catalog_path: Option<PathBuf>,
+        #[arg(long)]
+        log_path: Option<PathBuf>,
+        #[arg(long, required = true)]
+        allow_write: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace an exact indexed section; requires explicit write opt-in.
+    PatchSection {
+        vault: PathBuf,
+        path: PathBuf,
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        start_line: usize,
+        #[arg(long)]
+        end_line: usize,
+        #[arg(long)]
+        expected_hash: String,
+        #[arg(long)]
+        replacement: String,
+        #[arg(long, required = true)]
+        allow_write: bool,
         #[arg(long)]
         json: bool,
     },
@@ -348,6 +415,110 @@ fn run(cli: Cli) -> Result<()> {
                         diagnostic.raw_target
                     );
                 }
+            }
+        }
+        Command::BrainCreateLearning {
+            vault,
+            path,
+            database,
+            title,
+            finding,
+            context,
+            consequences,
+            origin,
+            created,
+            tags,
+            allow_write: _,
+            json,
+        } => {
+            let response = create_brain_learning(
+                &IndexConfig::new(vault, database),
+                &BrainLearningRequest {
+                    path,
+                    title,
+                    finding,
+                    context,
+                    consequences,
+                    origin,
+                    created,
+                    tags,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&response)?);
+            } else {
+                println!(
+                    "Created {} and updated brain registry in generation {} ({} bytes).",
+                    response.path.display(),
+                    response.generation,
+                    response.bytes
+                );
+            }
+        }
+        Command::CreateLearning {
+            vault,
+            path,
+            database,
+            title,
+            body,
+            tags,
+            catalog_path,
+            log_path,
+            allow_write: _,
+            json,
+        } => {
+            let config =
+                IndexConfig::new(vault, database).with_generated_outputs(catalog_path, log_path);
+            let response = create_learning(
+                &config,
+                &CreateLearningRequest {
+                    path,
+                    title,
+                    body,
+                    tags,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&response)?);
+            } else {
+                println!(
+                    "Created {} in generation {} ({} bytes).",
+                    response.path.display(),
+                    response.generation,
+                    response.bytes
+                );
+            }
+        }
+        Command::PatchSection {
+            vault,
+            path,
+            database,
+            start_line,
+            end_line,
+            expected_hash,
+            replacement,
+            allow_write: _,
+            json,
+        } => {
+            let response = patch_section(
+                &IndexConfig::new(vault, database),
+                &PatchSectionRequest {
+                    path,
+                    start_line,
+                    end_line,
+                    expected_hash,
+                    replacement,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&response)?);
+            } else {
+                println!(
+                    "Patched {} in generation {} ({} bytes).",
+                    response.path.display(),
+                    response.generation,
+                    response.bytes
+                );
             }
         }
         Command::Doctor {

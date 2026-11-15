@@ -22,6 +22,8 @@ A failed rebuild rolls back content and metadata together, preserving the previo
 - `title`: first level-one heading, when present.
 - `frontmatter`: YAML frontmatter converted to a JSON document; `NULL` when absent.
 
+When strict YAML parsing fails, JABFA narrowly recovers common agent-authored metadata without changing the source: unquoted colon-containing `origin`/`description` scalars are quoted, and an `updated` value with a leading YYYY-MM-DD plus parenthesized annotation is split into a strict `updated` date and `update_note`. Other malformed YAML, including the broken fixture, still produces diagnostics and is not indexed.
+
 Frontmatter is queryable with SQLite JSON functions, for example:
 
 ```sql

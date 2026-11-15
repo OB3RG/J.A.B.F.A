@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 description = "Just A Brain For AI: local Markdown knowledge indexing and retrieval"
+license = "MIT"
 publish = false
 
 [dependencies]
@@ -12,11 +13,11 @@ clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 notify = "8"
 pulldown-cmark = "0.13"
+rmcp = { version = "3.10", features = ["server", "transport-io", "macros", "schemars"] }
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
-
-[dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

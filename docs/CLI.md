@@ -4,7 +4,7 @@ Status: initial pre-release machine-output contract, covered by AT-10. Human-rea
 
 ## JSON success output
 
-With `--json`, each successful command writes exactly one JSON object followed by a newline to stdout. JABFA adds no color or terminal decoration. Every success object contains:
+With `--json`, each successful non-watch command writes exactly one JSON object followed by a newline to stdout. Watch mode writes one such object per committed indexing batch as JSON Lines. JABFA adds no color or terminal decoration. Every success object contains:
 
 - `output_schema_version`: integer `1`.
 
@@ -22,6 +22,10 @@ The initial fields are frozen as follows; every listed top-level object also inc
 | `get` | `generation`, `path`, `start_line`, `end_line`, `content`, `content_hash`, `bytes` | None |
 | `links` | `generation`, `path`, `links` | Each link: `kind`, `raw_target`, `target_heading`, `resolution`, `line_number`, `target_path` |
 | `related` | `generation`, `root`, `nodes`, `diagnostics`, `bytes` | Nodes: `path`, `depth`; diagnostics: `path`, `line_number`, `raw_target`, `resolution`, `message` |
+| `doctor` | `generation`, `healthy`, `diagnostics` | Each diagnostic: `path`, `kind`, `message` |
+| `create-learning` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write`; optional catalog/log configuration |
+| `patch-section` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write` and a current section citation |
+| `brain-create-learning` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write`; creates a schema-valid brain learning and updates registry/log |
 
 The library response types serialize to the same semantic objects as their CLI counterparts. Field names, types, and meanings must not be changed silently; changes require acceptance coverage and deliberate schema-version handling.
 
@@ -39,6 +43,6 @@ The library response types serialize to the same semantic objects as their CLI c
 |---|---|
 | `0` | Success, including a committed index with scoped per-document diagnostics. |
 | `1` | Operational, indexing, retrieval, SQL-safety, or resource-limit failure. |
-| `2` | Command-line usage error reported by Clap, such as missing required arguments or an unknown command. |
+| `2` | Command-line usage error reported by Clap, such as missing required arguments, omitted `--allow-write`, or an unknown command. |
 
 There is currently no JSON error-envelope contract; errors are plain stderr diagnostics. The versioned success schemas above are the initial automation contract.
