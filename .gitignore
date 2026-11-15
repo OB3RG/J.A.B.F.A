@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Local databases and JABFA-derived artifacts
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db
+.jabfa/
+
+# Local tooling and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Local scratch output
+/tmp/
