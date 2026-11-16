@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
@@ -6,7 +7,10 @@ use serde::Serialize;
 use crate::OUTPUT_SCHEMA_VERSION;
 use crate::error::{JabfaError, Result};
 use crate::index::IndexConfig;
-use crate::query::{SearchResult, search_sections};
+use crate::navigation::safe_relative_path;
+use crate::query::{SearchResult, search_sections, search_sections_in_paths};
+
+const MAX_SUBJECT_PATHS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContextResponse {
@@ -25,7 +29,38 @@ pub fn build_context(
     query: &str,
     max_tokens: usize,
 ) -> Result<ContextResponse> {
-    let search = search_sections(config, query, 100)?;
+    build_context_impl(config, query, max_tokens, None)
+}
+
+/// Build evidence only from selected vault-relative subject paths.
+pub fn build_context_for_paths(
+    config: &IndexConfig,
+    query: &str,
+    paths: &[&Path],
+    max_tokens: usize,
+) -> Result<ContextResponse> {
+    if paths.len() > MAX_SUBJECT_PATHS {
+        return Err(JabfaError::SubjectSelectionLimitExceeded {
+            max_paths: MAX_SUBJECT_PATHS,
+        });
+    }
+    let paths = paths
+        .iter()
+        .map(|path| safe_relative_path(path))
+        .collect::<Result<Vec<_>>>()?;
+    build_context_impl(config, query, max_tokens, Some(&paths))
+}
+
+fn build_context_impl(
+    config: &IndexConfig,
+    query: &str,
+    max_tokens: usize,
+    selected_paths: Option<&[PathBuf]>,
+) -> Result<ContextResponse> {
+    let search = match selected_paths {
+        Some(paths) => search_sections_in_paths(config, query, paths, 100)?,
+        None => search_sections(config, query, 100)?,
+    };
     if !config.database_path.is_file() {
         return Err(JabfaError::DatabaseNotFound(config.database_path.clone()));
     }
@@ -74,7 +109,11 @@ pub fn build_context(
                 .saturating_mul(4)
                 .saturating_sub(citation.len() + suffix.len());
             if available > 0 {
-                let shortened = truncate_to_match(&text, available, query, &result.snippet);
+                let shortened = if selected_paths.is_some() {
+                    truncate_to_passages(&text, available, query, &result.snippet)
+                } else {
+                    truncate_to_match(&text, available, query, &result.snippet)
+                };
                 response.context = format!("{citation}{shortened}{suffix}");
                 response.included += 1;
                 response.truncated += 1;
@@ -151,6 +190,167 @@ fn truncate_to_match(text: &str, available_bytes: usize, query: &str, snippet: &
     let prefix = if start > 0 { MARKER } else { "" };
     let suffix = if end < text.len() { MARKER } else { "" };
     format!("{prefix}{}{suffix}", &text[start..end])
+}
+
+fn truncate_to_passages(text: &str, available_bytes: usize, query: &str, snippet: &str) -> String {
+    let passages = bold_passages(text);
+    if passages.len() < 2 {
+        return truncate_to_match(text, available_bytes, query, snippet);
+    }
+    let query_tokens = normalized_tokens(query);
+    if query_tokens.is_empty() {
+        return truncate_to_match(text, available_bytes, query, snippet);
+    }
+    let passage_tokens = passages
+        .iter()
+        .map(|passage| normalized_tokens(passage))
+        .collect::<Vec<_>>();
+    let coverage = passage_tokens
+        .iter()
+        .map(|tokens| tokens.intersection(&query_tokens).count())
+        .collect::<Vec<_>>();
+    let best_coverage = coverage.iter().copied().max().unwrap_or(0);
+    let mut uncovered = query_tokens.clone();
+    let mut selected = Vec::new();
+    if let Some(index) = (0..passages.len()).rfind(|index| {
+        is_milestone(passages[*index])
+            && coverage[*index] > 0
+            && coverage[*index] * 2 >= best_coverage
+    }) {
+        selected.push(index);
+        uncovered.retain(|token| !passage_tokens[index].contains(token));
+    }
+    let heading_tokens = passages
+        .iter()
+        .map(|passage| normalized_tokens(passage_label(passage)))
+        .collect::<Vec<_>>();
+    let mut covered_headings = selected.iter().fold(HashSet::new(), |mut tokens, index| {
+        tokens.extend(heading_tokens[*index].iter().cloned());
+        tokens
+    });
+    while selected.len() < 4 {
+        let best = (0..passages.len())
+            .filter(|index| !selected.contains(index))
+            .map(|index| {
+                let added = heading_tokens[index]
+                    .intersection(&query_tokens)
+                    .filter(|token| !covered_headings.contains(*token))
+                    .count();
+                (index, added, coverage[index])
+            })
+            .filter(|(_, added, _)| *added > 0)
+            .max_by(|left, right| {
+                left.1
+                    .cmp(&right.1)
+                    .then_with(|| left.2.cmp(&right.2))
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+        let Some((index, _, _)) = best else {
+            break;
+        };
+        selected.push(index);
+        covered_headings.extend(heading_tokens[index].iter().cloned());
+        uncovered.retain(|token| !passage_tokens[index].contains(token));
+    }
+    while selected.len() < 4 {
+        let best = (0..passages.len())
+            .filter(|index| !selected.contains(index))
+            .map(|index| {
+                let added = passage_tokens[index].intersection(&uncovered).count();
+                (index, added, coverage[index])
+            })
+            .filter(|(_, added, _)| *added > 0)
+            .max_by(|left, right| {
+                left.1
+                    .cmp(&right.1)
+                    .then_with(|| left.2.cmp(&right.2))
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+        let Some((index, _, _)) = best else {
+            break;
+        };
+        selected.push(index);
+        uncovered.retain(|token| !passage_tokens[index].contains(token));
+    }
+    if selected.is_empty() {
+        return truncate_to_match(text, available_bytes, query, snippet);
+    }
+
+    const SEPARATOR: &str = "\n\n…\n\n";
+    const SUFFIX: &str = "\n…";
+    let mut composed = String::new();
+    for index in selected {
+        let passage = passages[index].trim();
+        let separator = if composed.is_empty() { "" } else { SEPARATOR };
+        if composed.len() + separator.len() + passage.len() + SUFFIX.len() > available_bytes {
+            if composed.is_empty() {
+                if available_bytes <= SUFFIX.len() {
+                    return truncate_to_match(text, available_bytes, query, snippet);
+                }
+                let shortened =
+                    truncate_to_match(passage, available_bytes - SUFFIX.len(), query, snippet);
+                composed.push_str(&shortened);
+            }
+            break;
+        }
+        composed.push_str(separator);
+        composed.push_str(passage);
+    }
+    if composed.is_empty() {
+        return truncate_to_match(text, available_bytes, query, snippet);
+    }
+    composed.push_str(SUFFIX);
+    composed
+}
+
+fn bold_passages(text: &str) -> Vec<&str> {
+    let mut passages = Vec::new();
+    let mut start = 0;
+    let mut offset = 0;
+    for paragraph in text.split_inclusive("\n\n") {
+        if is_passage_boundary(paragraph) && offset > start {
+            passages.push(&text[start..offset]);
+            start = offset;
+        }
+        offset += paragraph.len();
+    }
+    if start < text.len() {
+        passages.push(&text[start..]);
+    }
+    passages
+}
+
+fn is_passage_boundary(paragraph: &str) -> bool {
+    let paragraph = paragraph.trim_start();
+    [
+        "**Milestone (",
+        "**The finding.**",
+        "**Consequences.**",
+        "**Links.**",
+    ]
+    .iter()
+    .any(|marker| paragraph.starts_with(marker))
+}
+
+fn passage_label(passage: &str) -> &str {
+    let passage = passage.trim_start();
+    if let Some(rest) = passage.strip_prefix("**")
+        && let Some(end) = rest.find("**")
+    {
+        return &passage[..end + 4];
+    }
+    passage.lines().next().unwrap_or_default()
+}
+
+fn is_milestone(passage: &str) -> bool {
+    passage.trim_start().starts_with("**Milestone (")
+}
+
+fn normalized_tokens(text: &str) -> HashSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 fn find_query_match(text: &str, query: &str, snippet: &str) -> Option<usize> {

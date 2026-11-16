@@ -16,8 +16,10 @@ Available now:
 ```bash
 cargo build --release
 target/release/jabfa index ~/Documents/llm-brain --database /tmp/llm-brain-jabfa.sqlite3
+target/release/jabfa subjects ~/Documents/llm-brain "representative question" --database /tmp/llm-brain-jabfa.sqlite3 --json
 target/release/jabfa search ~/Documents/llm-brain "representative question" --database /tmp/llm-brain-jabfa.sqlite3 --json
 target/release/jabfa context ~/Documents/llm-brain "representative question" --database /tmp/llm-brain-jabfa.sqlite3 --max-tokens 2000 --json
+target/release/jabfa context ~/Documents/llm-brain "representative question" --database /tmp/llm-brain-jabfa.sqlite3 --path wiki/learnings/example.md --max-tokens 1200 --json
 target/release/jabfa doctor ~/Documents/llm-brain --database /tmp/llm-brain-jabfa.sqlite3 --json
 ```
 
@@ -25,7 +27,7 @@ Compare citation coverage, evidence size, latency, and answer usefulness with th
 
 ## Stage 2 — read-only MCP dogfooding
 
-**Initial enablement complete:** the global Pi `jabfa` server is connected with seven direct read-only tools. A user-level wrapper refreshes `/tmp/llm-brain-jabfa.sqlite3` on startup; `brain-recall` uses MCP first with targeted fallback, and `brain-scribe` uses MCP deduplication plus a derived-index refresh after existing wiki writes. Live recall and scribe dogfoods passed. This wrapper behavior is specific to the configured user setup; the stock MCP server itself still has no indexing tool.
+**Initial enablement complete:** the global Pi `jabfa` server is connected with nine direct read-only tools. A user-level wrapper refreshes `/tmp/llm-brain-jabfa.sqlite3` on startup; `brain-recall` discovers subjects first and uses required-path `investigate` for bounded passage-aware evidence, with targeted fallback, and `brain-scribe` uses MCP deduplication plus a derived-index refresh after existing wiki writes. Live recall and scribe dogfoods passed. This wrapper behavior is specific to the configured user setup; the stock MCP server itself still has no indexing tool.
 
 Available now. Register `jabfa-mcp` locally as described in [MCP.md](MCP.md), using the absolute vault and `/tmp` database paths. Ask the same representative questions through the agent and compare the structured results with Stage 1. Do not enable remote transport. The MCP server does not index automatically, so continue the watcher or index after edits.
 
@@ -62,4 +64,4 @@ This stage had separate, explicit user approval before execution.
 
 ## Unresolved measurements
 
-The initial synthetic retrieval benchmark is not an llm-brain baseline. Record actual representative-vault citation coverage, legacy-agent tokens/latency, and JABFA tokens/latency before claiming the product brief's 80% context-token reduction target. No automatic migration is scheduled without those measurements and explicit approval.
+The initial synthetic retrieval benchmark is not an llm-brain baseline. One clean, same-question live-agent pair retained citation coverage and measured 21,713 provider-reported total tokens with MCP versus 22,877 with forced legacy retrieval: a 5.1% reduction, not the product brief's 80% target. MCP wall time was 32.628 seconds versus 21.732 seconds in that single sample. A subsequent subject-first run used 19,087 total tokens (12.1% less than section-first MCP and 16.6% less than legacy) and took 25.008 seconds (23.4% faster than section-first MCP but still 15.1% slower than legacy). It retained the required facts with selected-path context, although a stale historical tool-count statement remained. Combined passage composition, required-path investigation, a condensed four-tool/200-word recall prompt, and snippet-only simple answers then measured 17,618 tokens and 16.769 seconds on the complex question, with the required MIT/wrapper/canary facts correct. A simple license question skipped investigation and used 10,214 tokens in 5.888 seconds. These sequential single-question runs are preliminary. Repeat token/latency and citation-coverage measurements across representative questions before claiming the target or changing migration defaults. No automatic migration is scheduled without those measurements and explicit approval.

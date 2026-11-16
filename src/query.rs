@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{Connection, OpenFlags, params_from_iter};
 use serde::Serialize;
 
 use crate::OUTPUT_SCHEMA_VERSION;
@@ -27,6 +28,24 @@ pub struct SearchResponse {
 }
 
 pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Result<SearchResponse> {
+    search_sections_impl(config, query, limit, None)
+}
+
+pub(crate) fn search_sections_in_paths(
+    config: &IndexConfig,
+    query: &str,
+    paths: &[PathBuf],
+    limit: usize,
+) -> Result<SearchResponse> {
+    search_sections_impl(config, query, limit, Some(paths))
+}
+
+fn search_sections_impl(
+    config: &IndexConfig,
+    query: &str,
+    limit: usize,
+    selected_paths: Option<&[PathBuf]>,
+) -> Result<SearchResponse> {
     if !config.database_path.is_file() {
         return Err(JabfaError::DatabaseNotFound(config.database_path.clone()));
     }
@@ -36,7 +55,7 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     let generation = read_generation(&connection)?;
-    if query.trim().is_empty() || limit == 0 {
+    if query.trim().is_empty() || limit == 0 || selected_paths.is_some_and(<[PathBuf]>::is_empty) {
         return Ok(SearchResponse {
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             generation,
@@ -44,26 +63,37 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
         });
     }
 
-    let limit = limit.min(100) as i64;
-    let mut statement = connection.prepare(
-        "SELECT
+    let mut parameters = vec![SqlValue::Text(literal_fts_query(query))];
+    let mut sql = "SELECT
             documents.path,
             sections.heading_path,
             sections.start_line,
             sections.end_line,
             sections.content_hash,
             bm25(section_search) AS score,
-            snippet(section_search, 1, '', '', '…', 12),
+            snippet(section_search, 1, '', '', '…', 13),
             sections.id
          FROM section_search
          JOIN sections ON sections.id = section_search.section_id
          JOIN documents ON documents.id = sections.document_id
-         WHERE section_search MATCH ?1
-         ORDER BY score ASC, documents.path ASC, sections.start_line ASC
-         LIMIT ?2",
-    )?;
+         WHERE section_search MATCH ?"
+        .to_owned();
+    if let Some(paths) = selected_paths {
+        sql.push_str(" AND documents.path IN (");
+        sql.push_str(&vec!["?"; paths.len()].join(","));
+        sql.push(')');
+        parameters.extend(
+            paths
+                .iter()
+                .map(|path| SqlValue::Text(path.to_string_lossy().into_owned())),
+        );
+    }
+    sql.push_str(" ORDER BY score ASC, documents.path ASC, sections.start_line ASC LIMIT ?");
+    parameters.push(SqlValue::Integer(limit.min(100) as i64));
+
+    let mut statement = connection.prepare(&sql)?;
     let results = statement
-        .query_map(rusqlite::params![query, limit], |row| {
+        .query_map(params_from_iter(parameters), |row| {
             let path: String = row.get(0)?;
             let heading_path: String = row.get(1)?;
             let score: f64 = row.get(5)?;
@@ -89,6 +119,14 @@ pub fn search_sections(config: &IndexConfig, query: &str, limit: usize) -> Resul
         generation,
         results,
     })
+}
+
+fn literal_fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn canonical_score(score: f64) -> f64 {

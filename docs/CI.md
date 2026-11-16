@@ -11,4 +11,4 @@ cargo test --doc
 
 The job uses the `rust:1.100.0-bookworm` container and `actions/checkout@v4`, matching `rust-toolchain.toml`. Dependency downloads, action retrieval, and hosted execution are development-infrastructure network activity; JABFA's runtime retrieval remains local-only.
 
-The workflow is added locally but has not run on Forgejo until a commit containing it is pushed. Check the remote's Actions result after that push rather than inferring a hosted pass from local tests.
+The workflow was pushed in `e69f78a`. A hosted Actions result has not been observed or verified, so no hosted pass is claimed. Check the remote's Actions result rather than inferring one from local tests.

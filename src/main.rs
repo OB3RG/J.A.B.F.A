@@ -9,9 +9,9 @@ use clap::{Parser, Subcommand};
 use jabfa::{
     BrainLearningRequest, CreateLearningRequest, IndexConfig, IndexReport, JabfaError,
     PatchSectionRequest, RelatedLimits, Result, SqlQueryLimits, build_context,
-    create_brain_learning, create_learning, doctor, get_document, get_section, index_status,
-    index_vault, index_vault_incremental, list_links, patch_section, query_sql, related_documents,
-    search_sections, watch_vault,
+    build_context_for_paths, create_brain_learning, create_learning, doctor, get_document,
+    get_section, index_status, index_vault, index_vault_incremental, list_links, patch_section,
+    query_sql, related_documents, search_sections, search_subjects, watch_vault,
 };
 
 #[derive(Debug, Parser)]
@@ -37,6 +37,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Discover unique subjects before investigating their evidence.
+    Subjects {
+        vault: PathBuf,
+        query: String,
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Search ranked heading-level sections.
     Search {
         vault: PathBuf,
@@ -56,6 +67,8 @@ enum Command {
         database: PathBuf,
         #[arg(long, default_value_t = 2_000)]
         max_tokens: usize,
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -272,6 +285,42 @@ fn run(cli: Cli) -> Result<()> {
                 print_index_report(&report, json)?;
             }
         }
+        Command::Subjects {
+            vault,
+            query,
+            database,
+            limit,
+            json,
+        } => {
+            let response = search_subjects(&IndexConfig::new(vault, database), &query, limit)?;
+            if json {
+                println!("{}", serde_json::to_string(&response)?);
+            } else {
+                for result in response.results {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{} section(s)",
+                        result.path.display(),
+                        result.title,
+                        result.entry_type,
+                        result.match_source,
+                        result.matched_sections
+                    );
+                    let heading = if result.heading_path.is_empty() {
+                        "Preamble".to_owned()
+                    } else {
+                        result.heading_path.join(" > ")
+                    };
+                    println!(
+                        "{}:{}-{} {}",
+                        result.path.display(),
+                        result.start_line,
+                        result.end_line,
+                        heading
+                    );
+                    println!("{}\n", result.snippet);
+                }
+            }
+        }
         Command::Search {
             vault,
             query,
@@ -305,9 +354,16 @@ fn run(cli: Cli) -> Result<()> {
             query,
             database,
             max_tokens,
+            paths,
             json,
         } => {
-            let response = build_context(&IndexConfig::new(vault, database), &query, max_tokens)?;
+            let config = IndexConfig::new(vault, database);
+            let response = if paths.is_empty() {
+                build_context(&config, &query, max_tokens)?
+            } else {
+                let paths = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+                build_context_for_paths(&config, &query, &paths, max_tokens)?
+            };
             if json {
                 println!("{}", serde_json::to_string(&response)?);
             } else {

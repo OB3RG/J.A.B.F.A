@@ -35,6 +35,9 @@ pub enum JabfaError {
     #[error("document is not present in the index: {0}")]
     DocumentNotFound(PathBuf),
 
+    #[error("subject selection exceeded the path limit of {max_paths}")]
+    SubjectSelectionLimitExceeded { max_paths: usize },
+
     #[error("section is not present in the index: {path} lines {start_line}-{end_line}")]
     SectionNotFound {
         path: PathBuf,

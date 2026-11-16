@@ -14,7 +14,7 @@ LLM agents often waste time and tokens walking directories, rereading catalogs, 
 
 - **Markdown-native:** keep Obsidian compatibility, wikilinks, frontmatter, Git history, and direct human access.
 - **Queryable:** index documents, heading-level sections, metadata, tags, links, and tasks in SQLite.
-- **Agent-efficient:** find relevant notes by subject, then retrieve selected sections or a bounded evidence bundle instead of scanning the vault.
+- **Agent-efficient:** find relevant notes by subject, then retrieve selected passages or a bounded evidence bundle instead of scanning the vault.
 - **Dual interface:** use the same query engine from a scriptable CLI and an MCP server.
 - **Local-first:** no cloud service or network access is required for core indexing and search.
 
@@ -64,7 +64,7 @@ jabfa context ~/Documents/my-vault "Why were the brain agents slow?" --database 
 jabfa context ~/Documents/my-vault "PETG adhesion" --database /tmp/my-vault.sqlite3 --path projects/PETG.md --max-tokens 1200 --json
 ```
 
-By default, `context` writes a Markdown evidence payload. With `--json`, it returns the evidence together with budget, deduplication, omission, and truncation counts.
+By default, `context` writes a Markdown evidence payload. With `--json`, it returns the evidence together with budget, deduplication, omission, and truncation counts. Selected context can compose up to four complementary bold-milestone passages, prioritizing the latest relevant milestone and distinct query facets without exceeding the budget. MCP `investigate` exposes the same behavior with required paths and a 1,200-token default.
 
 ### Inspect documents and links
 
@@ -166,7 +166,7 @@ See [Structured write design](docs/WRITES.md) for validation, recovery, and real
 
 The CLI and MCP share the same query library, and their JSON responses are tested for semantic equality with that library. The context pipeline deduplicates evidence, reports omissions, truncates oversized sections, and enforces a citation-inclusive evidence budget. SQL rejects mutation, schema changes, pragmas, attachments, and file functions while enforcing row, byte, and execution-time limits.
 
-The current suite passes 49 tests, including acceptance tests AT-01 through AT-22 and five MCP tests. Additional regressions cover the CLI, writes, long sections, frontmatter, literal queries, punctuation/backslash paths, and `llm-brain` writes. The structured-write canary passed against the real `llm-brain` vault; the `brain-scribe` agent now uses `brain-create-learning` for new notes. Real-vault writes still require separate explicit approval; MCP remains read-only.
+The current suite passes 55 tests, including acceptance tests AT-01 through AT-24 and six MCP tests. Additional regressions cover the CLI, writes, long sections, frontmatter, literal queries, punctuation/backslash paths, passage priority, and `llm-brain` writes. The structured-write canary passed against the real `llm-brain` vault; the `brain-scribe` agent now uses `brain-create-learning` for new notes. Real-vault writes still require separate explicit approval; MCP remains read-only.
 
 ## Development
 

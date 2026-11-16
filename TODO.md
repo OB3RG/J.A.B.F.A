@@ -15,7 +15,7 @@ This is the actionable work queue. Keep it ordered and update it only after the 
 - [x] Implement only enough M1 behavior to satisfy AT-01 and AT-02.
 - [x] Run the full quality gate and review the initial owned data model.
 - [x] Select the MIT license and add the license file.
-- [x] Add Forgejo Actions CI now that the hosted remote is selected (hosted run pending next push).
+- [x] Add Forgejo Actions CI now that the hosted remote is selected (workflow pushed in `e69f78a`; hosted result remains unobserved).
 
 ## Next — M1: read-only index core
 
@@ -76,7 +76,13 @@ Write CLI acceptance tests before implementing the remaining `index`/`status` co
 - [x] Add failing regressions for long sections with bold milestone/topic markers and repeated terms, then preserve the snippet-matched passage when truncation is required.
 - [x] Verify citation-supported coverage on long learning pages and prefer durable pages over redundant log-only evidence in the recall agent.
 - [x] Measure a preliminary direct-subagent latency baseline (MCP 65.392 s versus legacy 50.896 s; single run, LLM-dominated, no end-to-end speedup claim).
-- [ ] Obtain provider-reported input/output token totals for equivalent legacy/MCP agent runs before evaluating the 80% target; current token figures are payload estimates.
+- [x] Fix the dogfood `read-only` FTS5 failure with a literal-query regression; all 44 tests and quality gates pass.
+- [x] Recover provider-reported usage for a clean equivalent agent pair: MCP 21,713 versus legacy 22,877 total tokens (5.1% fewer, not the 80% target); wall time was 32.628 s versus 21.732 s in one sample.
+- [x] Implement AT-21/AT-22 subject discovery and selected-path context through library, CLI, and MCP, including punctuation-normalized title matching and literal Unix backslash-path regressions; all 49 tests and quality gates pass.
+- [x] Run a preliminary subject-first comparison: 19,087 total tokens and 25.008 s versus 21,713 tokens and 32.628 s for previous MCP (12.1% fewer tokens, 23.4% faster); one question, with a residual historical tool-count summarization caveat.
+- [x] Implement all four recall optimizations: bold-milestone passage composition (AT-23), required-path `investigate` (AT-24), a condensed four-tool/200-word recall agent, and snippet-only single-fact answers; all 55 tests and quality gates pass.
+- [x] Measure the combined complex-question improvement: 17,618 tokens and 16.769 s versus 19,087 tokens and 25.008 s for the prior subject-first workflow (7.7% fewer tokens, 32.9% faster), with required MIT/wrapper/canary coverage. A simple license query skipped investigation and used 10,214 tokens in 5.888 s.
+- [ ] Measure subject-first recall against the previous MCP-first and legacy workflows across representative questions before claiming the 80% target or changing migration defaults.
 
 ## Later — only with measured need
 
@@ -120,3 +126,4 @@ Write CLI acceptance tests before implementing the remaining `index`/`status` co
 - [x] Fix dogfood long-section truncation with snippet-anchored excerpts and verify durable-page recall; all 37 tests and quality gates pass.
 - [x] Recover narrow agent-frontmatter compatibility cases and index the full brain with zero diagnostics; all 39 tests and quality gates pass.
 - [x] Add schema-valid brain learning/registry/log writes and complete the real-vault canary; all 43 tests and quality gates pass.
+- [x] Treat search input as literal FTS5 terms, fix hyphenated queries, and measure provider-reported agent tokens; all 44 tests and quality gates pass.

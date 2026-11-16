@@ -258,6 +258,7 @@ fn document_diagnostic(path: &Path, error: JabfaError) -> IndexDiagnostic {
         | JabfaError::DatabaseNotFound(_)
         | JabfaError::PathOutsideVault(_)
         | JabfaError::DocumentNotFound(_)
+        | JabfaError::SubjectSelectionLimitExceeded { .. }
         | JabfaError::SectionNotFound { .. }
         | JabfaError::InvalidSourceRange { .. }
         | JabfaError::SourceByteLimitExceeded { .. }

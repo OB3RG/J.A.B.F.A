@@ -87,7 +87,9 @@ JOIN documents ON documents.id = sections.document_id
 WHERE section_search MATCH 'relevant';
 ```
 
-The `search_sections` library API uses BM25 ranking with path/line tie-breaking and returns complete citations. `build_context` retrieves full section text, deduplicates normalized content, and applies the documented evidence budget. Direct SQL remains available for low-level inspection through the constrained interface below.
+The `search_sections` library API uses BM25 ranking with path/line tie-breaking and returns complete citations. `search_subjects` groups up to 100 ranked section candidates by document, reports title/type/match metadata and the number of candidate sections, and retains the best section for drill-down. Title and alias classification uses case-insensitive alphanumeric tokens consistent with FTS punctuation splitting. Title matches rank before aliases and content matches; generated `log.md`/`index.md` registries are demoted within each match class. This is a deterministic discovery view, not an entity-extraction or global occurrence-count algorithm.
+
+`build_context` retrieves full section text, deduplicates normalized content, and applies the documented evidence budget. `build_context_for_paths` applies the same pipeline after filtering the FTS query to at most 20 selected vault-relative documents. Without changing the SQLite schema, selected-context truncation can split oversized text at bold milestone/finding/consequences/link markers and compose up to four relevant passages. It prioritizes the latest sufficiently relevant milestone, retains complementary query coverage and distinct bold-label facets, and truncates the highest-priority passage before omitting it for an older fitting passage. The section citation and content hash remain those of the containing indexed section, with ellipses marking omitted text. Direct SQL remains available for low-level inspection through the constrained interface below.
 
 ## Read-only SQL
 

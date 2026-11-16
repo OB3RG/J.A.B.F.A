@@ -11,13 +11,15 @@ use std::thread;
 use std::time::Duration;
 
 use common::{
-    assert_section, basic_vault, malformed_vault, obsidian_vault, retrieval_vault, vault_manifest,
+    assert_section, basic_vault, malformed_vault, obsidian_vault, retrieval_vault, subject_vault,
+    vault_manifest,
 };
 use jabfa::{
     BrainLearningRequest, CreateLearningRequest, IndexConfig, JabfaError, PatchSectionRequest,
-    RelatedLimits, SqlQueryLimits, build_context, create_brain_learning, create_learning, doctor,
-    get_document, get_section, index_status, index_vault, index_vault_incremental, list_links,
-    parse_markdown, patch_section, query_sql, related_documents, search_sections, watch_vault,
+    RelatedLimits, SqlQueryLimits, build_context, build_context_for_paths, create_brain_learning,
+    create_learning, doctor, get_document, get_section, index_status, index_vault,
+    index_vault_incremental, list_links, parse_markdown, patch_section, query_sql,
+    related_documents, search_sections, search_subjects, watch_vault,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -516,6 +518,423 @@ fn at_07_search_returns_ranked_section_citations() {
     let limited = search_sections(&config, "a", 1).expect("limit search results");
     assert_eq!(limited.results.len(), 1);
     assert_eq!(limited.results[0], all.results[0]);
+}
+
+#[test]
+fn regression_search_handles_hyphenated_plain_text_queries() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create hyphenated-query vault");
+    fs::write(
+        vault.join("Agent.md"),
+        "# Agent safeguards\n\nThe JABFA wrapper performs a startup refresh of sqlite before the read-only canary.\n",
+    )
+    .expect("write hyphenated-query fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index hyphenated-query fixture");
+    let query = "JABFA wrapper startup refresh sqlite read-only canary";
+
+    let search = search_sections(&config, query, 3).expect("search literal hyphenated query");
+    assert_eq!(search.results.len(), 1);
+    assert_eq!(search.results[0].path, Path::new("Agent.md"));
+    assert!(search.results[0].snippet.contains("read-only"));
+
+    let context = build_context(&config, query, 250).expect("context for hyphenated query");
+    assert_eq!(context.included, 1);
+    assert!(context.context.contains("read-only canary"));
+}
+
+#[test]
+fn at_21_subject_search_groups_matches_into_investigable_entries() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = subject_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index subject vault");
+    let before = vault_manifest(&vault);
+
+    let sections = search_sections(&config, "JABFA", 10).expect("raw section matches");
+    assert_eq!(sections.results.len(), 3);
+    let expected = search_subjects(&config, "JABFA", 10).expect("subject search");
+    assert_eq!(expected.generation, 1);
+    assert_eq!(expected.results.len(), 2);
+
+    let learning = &expected.results[0];
+    assert_eq!(learning.path, Path::new("wiki/learnings/jabfa.md"));
+    assert_eq!(learning.title, "JABFA knowledge engine");
+    assert_eq!(learning.entry_type, "learning");
+    assert_eq!(learning.match_source, "title");
+    assert_eq!(learning.matched_sections, 1);
+    assert_eq!(learning.heading_path, ["JABFA knowledge engine"]);
+    assert!(learning.start_line <= learning.end_line);
+    assert_eq!(learning.content_hash.len(), 64);
+    assert!(learning.score.is_finite());
+    assert!(learning.snippet.contains("JABFA"));
+
+    let log = &expected.results[1];
+    assert_eq!(log.path, Path::new("wiki/log.md"));
+    assert_eq!(log.title, "Log");
+    assert_eq!(log.entry_type, "log");
+    assert_eq!(log.match_source, "content");
+    assert_eq!(log.matched_sections, 2);
+    assert_eq!(
+        search_subjects(&config, "JABFA", 1)
+            .expect("limited subject search")
+            .results
+            .len(),
+        1
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("subjects")
+        .arg(&vault)
+        .arg("JABFA")
+        .arg("--database")
+        .arg(&database)
+        .arg("--limit")
+        .arg("10")
+        .arg("--json")
+        .output()
+        .expect("run CLI subject search");
+    assert!(
+        output.status.success(),
+        "subjects stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let actual: serde_json::Value = serde_json::from_slice(&output.stdout).expect("subjects JSON");
+    assert_versioned_fields(&actual, &["generation", "output_schema_version", "results"]);
+    assert_object_fields(
+        &actual["results"][0],
+        &[
+            "content_hash",
+            "end_line",
+            "entry_type",
+            "heading_path",
+            "match_source",
+            "matched_sections",
+            "path",
+            "score",
+            "section_id",
+            "snippet",
+            "start_line",
+            "title",
+        ],
+    );
+    assert_eq!(
+        actual,
+        serde_json::to_value(&expected).expect("subject JSON value")
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("subjects")
+        .arg(&vault)
+        .arg("JABFA")
+        .arg("--database")
+        .arg(&database)
+        .output()
+        .expect("run human CLI subject search");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("human subjects stdout");
+    assert!(stdout.contains("wiki/learnings/jabfa.md"));
+    assert!(stdout.contains("JABFA knowledge engine"));
+    assert!(stdout.contains("learning"));
+    assert!(stdout.contains("wiki/log.md"));
+    assert_eq!(vault_manifest(&vault), before, "source vault changed");
+}
+
+#[test]
+fn regression_subject_title_matching_uses_fts_tokenization() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = subject_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index punctuation-normalized title vault");
+
+    let sections = search_sections(&config, "read-only", 10).expect("FTS title match");
+    assert_eq!(sections.results.len(), 1);
+    let subjects = search_subjects(&config, "read-only", 10).expect("subject title match");
+    assert_eq!(subjects.results.len(), 1);
+    assert_eq!(
+        subjects.results[0].path,
+        Path::new("wiki/learnings/read-only.md")
+    );
+    assert_eq!(subjects.results[0].match_source, "title");
+}
+
+#[test]
+fn at_22_context_can_be_restricted_to_selected_subjects() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = subject_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index subject vault");
+    let before = vault_manifest(&vault);
+    let selected = Path::new("wiki/learnings/jabfa.md");
+
+    let unfiltered = build_context(&config, "shared evidence", 1_000)
+        .expect("unfiltered subject fixture context");
+    assert!(unfiltered.included > 1);
+    let expected = build_context_for_paths(&config, "shared evidence", &[selected], 1_000)
+        .expect("selected-subject context");
+    assert_eq!(expected.generation, 1);
+    assert_eq!(expected.included, 1);
+    assert!(expected.context.contains("Path: `wiki/learnings/jabfa.md`"));
+    assert!(expected.context.contains("durable entry"));
+    assert!(!expected.context.contains("wiki/log.md"));
+    assert_eq!(
+        expected.estimated_tokens,
+        expected.context.len().div_ceil(4)
+    );
+
+    let empty = build_context_for_paths(&config, "shared evidence", &[], 1_000)
+        .expect("empty subject selection");
+    assert_eq!(empty.generation, 1);
+    assert_eq!(empty.included, 0);
+    assert!(empty.context.is_empty());
+    let traversal = build_context_for_paths(
+        &config,
+        "shared evidence",
+        &[Path::new("../outside.md")],
+        1_000,
+    );
+    assert!(matches!(traversal, Err(JabfaError::PathOutsideVault(_))));
+    let excessive = (0..21)
+        .map(|index| PathBuf::from(format!("{index}.md")))
+        .collect::<Vec<_>>();
+    let excessive = excessive.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    assert!(matches!(
+        build_context_for_paths(&config, "shared evidence", &excessive, 1_000),
+        Err(JabfaError::SubjectSelectionLimitExceeded { max_paths: 20 })
+    ));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("context")
+        .arg(&vault)
+        .arg("shared evidence")
+        .arg("--database")
+        .arg(&database)
+        .arg("--path")
+        .arg(selected)
+        .arg("--max-tokens")
+        .arg("1000")
+        .arg("--json")
+        .output()
+        .expect("run selected-subject CLI context");
+    assert!(
+        output.status.success(),
+        "context stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let actual: serde_json::Value = serde_json::from_slice(&output.stdout).expect("context JSON");
+    assert_eq!(
+        actual,
+        serde_json::to_value(&expected).expect("context JSON value")
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jabfa"))
+        .arg("context")
+        .arg(&vault)
+        .arg("shared evidence")
+        .arg("--database")
+        .arg(&database)
+        .arg("--path")
+        .arg(selected)
+        .arg("--max-tokens")
+        .arg("1000")
+        .output()
+        .expect("run human selected-subject CLI context");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("human context stdout"),
+        expected.context
+    );
+    assert_eq!(vault_manifest(&vault), before, "source vault changed");
+}
+
+#[test]
+fn at_23_selected_context_composes_relevant_passages_from_long_sections() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create milestone-passage vault");
+    let source = format!(
+        "# Long project\n\n**Milestone (older).** MIT license and the startup wrapper are documented for JABFA.\n\n**Milestone (noise).** {}\n\n**Milestone (current).** The `subjects` workflow uses selected paths and eight read-only tools; the canary completed.\n",
+        "Distractor implementation details consume the continuous excerpt budget. ".repeat(40)
+    );
+    fs::write(vault.join("Project.md"), source).expect("write milestone-passage fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index milestone-passage fixture");
+
+    let response = build_context_for_paths(
+        &config,
+        "MIT wrapper subjects canary",
+        &[Path::new("Project.md")],
+        180,
+    )
+    .expect("compose selected milestone passages");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 180);
+    assert!(response.context.contains("MIT license"));
+    assert!(response.context.contains("startup wrapper"));
+    assert!(response.context.contains("eight read-only tools"));
+    assert!(response.context.contains("canary completed"));
+    assert!(!response.context.contains("Distractor implementation"));
+    assert!(response.context.contains('…'));
+}
+
+#[test]
+fn regression_selected_context_includes_latest_relevant_milestone() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create latest-milestone vault");
+    let source = format!(
+        "# Long project\n\n**Milestone (older).** MIT license, startup wrapper, canary setup, and seven tools were documented with extensive supporting detail.\n\n**Milestone (noise).** {}\n\n**Milestone (current).** MIT wrapper setup now uses eight read-only tools and subject-first investigation.\n",
+        "Distractor implementation details consume the continuous excerpt budget. ".repeat(40)
+    );
+    fs::write(vault.join("Project.md"), source).expect("write latest-milestone fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index latest-milestone fixture");
+
+    let response = build_context_for_paths(
+        &config,
+        "MIT wrapper canary setup",
+        &[Path::new("Project.md")],
+        180,
+    )
+    .expect("retain latest relevant milestone");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 180);
+    assert!(response.context.contains("seven tools"));
+    assert!(response.context.contains("eight read-only tools"));
+    assert!(response.context.contains("subject-first investigation"));
+    assert!(!response.context.contains("Distractor implementation"));
+}
+
+#[test]
+fn regression_selected_context_retains_distinct_query_headings() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create query-heading vault");
+    let source = format!(
+        "# Long project\n\n**Milestone (older, MIT license).** MIT license, the startup wrapper, and a pending canary were documented for JABFA.\n\n**Milestone (noise).** {}\n\n**Milestone (real-vault structured-write canary complete).** The user-approved canary completed; new learning pages use brain-create-learning.\n\n**Milestone (current, subject-first retrieval).** The `subjects` workflow uses required investigation paths and current read-only tools.\n",
+        "Distractor implementation details consume the continuous excerpt budget. ".repeat(40)
+    );
+    fs::write(vault.join("Project.md"), source).expect("write query-heading fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index query-heading fixture");
+
+    let response = build_context_for_paths(
+        &config,
+        "MIT wrapper canary subjects",
+        &[Path::new("Project.md")],
+        240,
+    )
+    .expect("retain distinct query headings");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 240);
+    assert!(response.context.contains("MIT license"));
+    assert!(response.context.contains("startup wrapper"));
+    assert!(response.context.contains("user-approved canary completed"));
+    assert!(response.context.contains("brain-create-learning"));
+    assert!(response.context.contains("required investigation paths"));
+    assert!(!response.context.contains("Distractor implementation"));
+}
+
+#[test]
+fn regression_selected_context_retains_four_query_facets() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create four-facet vault");
+    let source = format!(
+        "# Long project\n\n**Milestone (noise).** {}\n\n**Milestone (older, MIT license).** MIT license, the startup wrapper, and a pending canary were documented for JABFA.\n\n**Milestone (live JABFA MCP retrieval benchmark).** JABFA MCP retrieval was measured.\n\n**Milestone (real-vault structured-write canary complete).** The user-approved canary completed; new learning pages use brain-create-learning.\n\n**Milestone (current, subject-first retrieval).** The `subjects` workflow uses required investigation paths.\n",
+        "Distractor implementation details consume the continuous excerpt budget. ".repeat(40)
+    );
+    fs::write(vault.join("Project.md"), source).expect("write four-facet fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index four-facet fixture");
+
+    let response = build_context_for_paths(
+        &config,
+        "JABFA MCP MIT wrapper canary subjects",
+        &[Path::new("Project.md")],
+        260,
+    )
+    .expect("retain four query facets");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 260);
+    assert!(response.context.contains("MIT license"));
+    assert!(response.context.contains("startup wrapper"));
+    assert!(
+        response
+            .context
+            .contains("JABFA MCP retrieval was measured")
+    );
+    assert!(response.context.contains("user-approved canary completed"));
+    assert!(response.context.contains("required investigation paths"));
+    assert!(!response.context.contains("Distractor implementation"));
+}
+
+#[test]
+fn regression_selected_context_truncates_latest_before_older_passages() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir(&vault).expect("create latest-budget vault");
+    let source = format!(
+        "# Long project\n\n**Milestone (older, MIT license).** MIT license is supported by a short older passage.\n\n**Milestone (current).** {} The unique currentsetup fact must survive.\n",
+        "Current implementation details require substantial space before the decisive fact. "
+            .repeat(20)
+    );
+    fs::write(vault.join("Project.md"), source).expect("write latest-budget fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index latest-budget fixture");
+
+    let response =
+        build_context_for_paths(&config, "MIT currentsetup", &[Path::new("Project.md")], 100)
+            .expect("prioritize latest passage within budget");
+    assert_eq!(response.included, 1);
+    assert_eq!(response.truncated, 1);
+    assert!(response.estimated_tokens <= 100);
+    assert!(response.context.contains("currentsetup"));
+    assert!(!response.context.contains("short older passage"));
+}
+
+#[cfg(unix)]
+#[test]
+fn regression_selected_context_preserves_unix_backslash_paths() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki")).expect("create backslash-path vault");
+    let selected = Path::new("wiki/a\\b.md");
+    fs::write(
+        vault.join(selected),
+        "# Backslash path\n\nSelected evidence from a literal Unix filename.\n",
+    )
+    .expect("write backslash-path fixture");
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index backslash-path fixture");
+
+    let sections =
+        search_sections(&config, "selected evidence", 10).expect("search backslash-path fixture");
+    assert_eq!(sections.results.len(), 1);
+    assert_eq!(sections.results[0].path, selected);
+    let context = build_context_for_paths(&config, "selected evidence", &[selected], 500)
+        .expect("context for literal Unix backslash path");
+    assert_eq!(context.included, 1);
+    assert!(context.context.contains("literal Unix filename"));
 }
 
 #[test]

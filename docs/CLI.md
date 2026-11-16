@@ -16,6 +16,7 @@ The initial fields are frozen as follows; every listed top-level object also inc
 |---|---|---|
 | `index` | `files`, `documents_indexed`, `sections_indexed`, `generation`, `diagnostics` | Each diagnostic: `path`, `kind`, `message` |
 | `status` | `generation`, `schema_version`, `state`, `documents`, `sections` | None |
+| `subjects` | `generation`, `results` | Each result: `path`, `title`, `entry_type`, `match_source`, `matched_sections`, `section_id`, `heading_path`, `start_line`, `end_line`, `content_hash`, `score`, `snippet` |
 | `search` | `generation`, `results` | Each result: `section_id`, `path`, `heading_path`, `start_line`, `end_line`, `content_hash`, `score`, `snippet` |
 | `context` | `generation`, `context`, `estimated_tokens`, `included`, `omitted`, `deduplicated`, `truncated` | None |
 | `sql` | `columns`, `rows`, `bytes` | Rows are positional arrays of typed JSON values corresponding to `columns` |
@@ -26,6 +27,8 @@ The initial fields are frozen as follows; every listed top-level object also inc
 | `create-learning` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write`; optional catalog/log configuration |
 | `patch-section` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write` and a current section citation |
 | `brain-create-learning` | `path`, `content_hash`, `bytes`, `generation` | Requires `--allow-write`; creates a schema-valid brain learning and updates registry/log |
+
+`context` accepts repeated `--path <vault-relative-path>` options to restrict evidence to at most 20 selected subjects. Without `--path`, it retains whole-vault behavior. For oversized selected sections, bold milestone/finding/consequences/link blocks can be composed into up to four complementary passages: the latest sufficiently relevant milestone is prioritized, distinct bold-label query facets are retained, and the highest-priority passage is truncated before any older supporting passage. Unfiltered context keeps the original continuous snippet-anchored truncation. `subjects` groups up to 100 ranked section candidates by document and ranks title matches, then aliases, then content matches using case-insensitive alphanumeric token normalization, with generated `log.md`/`index.md` entries demoted within each match class.
 
 The library response types serialize to the same semantic objects as their CLI counterparts. Field names, types, and meanings must not be changed silently; changes require acceptance coverage and deliberate schema-version handling.
 

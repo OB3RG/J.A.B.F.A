@@ -46,6 +46,27 @@ pub fn obsidian_vault(temp: &TempDir) -> PathBuf {
     vault
 }
 
+pub fn subject_vault(temp: &TempDir) -> PathBuf {
+    let vault = temp.path().join("vault");
+    fs::create_dir_all(vault.join("wiki/learnings")).expect("create subject learning directory");
+    fs::write(
+        vault.join("wiki/learnings/jabfa.md"),
+        "---\ntype: learning\naliases: [JABFA]\n---\n# JABFA knowledge engine\n\nJABFA shared evidence in the durable entry.\n\n## Current setup\n\nThe local SQLite index keeps retrieval focused.\n",
+    )
+    .expect("write subject learning fixture");
+    fs::write(
+        vault.join("wiki/learnings/read-only.md"),
+        "---\ntype: learning\n---\n# Read Only Setup\n\nSafeguards use literal hyphenated queries.\n",
+    )
+    .expect("write punctuation-normalized title fixture");
+    fs::write(
+        vault.join("wiki/log.md"),
+        "# Log\n\n## Earlier JABFA\n\nJABFA shared evidence in the old log.\n\n## Current JABFA\n\nJABFA shared evidence in the current log.\n",
+    )
+    .expect("write subject log fixture");
+    vault
+}
+
 pub fn vault_manifest(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut manifest = BTreeMap::new();
     collect_manifest(root, root, &mut manifest);

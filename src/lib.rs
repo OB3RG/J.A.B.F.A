@@ -15,6 +15,7 @@ mod navigation;
 mod parser;
 mod query;
 mod sql;
+mod subject;
 mod watch;
 mod writes;
 
@@ -22,7 +23,7 @@ mod writes;
 pub const OUTPUT_SCHEMA_VERSION: u32 = 1;
 
 pub use brain::{BrainLearningRequest, create_brain_learning};
-pub use context::{ContextResponse, build_context};
+pub use context::{ContextResponse, build_context, build_context_for_paths};
 pub use doctor::{DoctorResponse, doctor};
 pub use error::{JabfaError, Result};
 pub use index::{
@@ -38,6 +39,7 @@ pub use navigation::{
 pub use parser::parse_markdown;
 pub use query::{SearchResponse, SearchResult, search_sections};
 pub use sql::{SqlQueryLimits, SqlResponse, query_sql};
+pub use subject::{SubjectResult, SubjectSearchResponse, search_subjects};
 pub use watch::watch_vault;
 pub use writes::{
     CreateLearningRequest, PatchSectionRequest, WriteResponse, create_learning, patch_section,

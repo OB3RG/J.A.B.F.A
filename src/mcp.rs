@@ -13,8 +13,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    IndexConfig, RelatedLimits, Result, SqlQueryLimits, build_context, get_document, get_section,
-    index_status, query_sql, related_documents, search_sections,
+    IndexConfig, RelatedLimits, Result, SqlQueryLimits, build_context, build_context_for_paths,
+    get_document, get_section, index_status, query_sql, related_documents, search_sections,
+    search_subjects,
 };
 
 /// JABFA's local MCP server adapter.
@@ -60,6 +61,13 @@ impl ServerHandler for JabfaMcp {
     ) -> std::result::Result<CallToolResponse, McpError> {
         let arguments = Value::Object(request.arguments.unwrap_or_default());
         match request.name.as_ref() {
+            "subjects" => {
+                let arguments: SearchArguments = parse_arguments(arguments)?;
+                validate_query(&arguments.query)?;
+                let limit = arguments.limit.unwrap_or(10);
+                validate_max(limit, 100, "limit")?;
+                structured_result(search_subjects(&self.config, &arguments.query, limit))
+            }
             "search" => {
                 let arguments: SearchArguments = parse_arguments(arguments)?;
                 validate_query(&arguments.query)?;
@@ -67,12 +75,41 @@ impl ServerHandler for JabfaMcp {
                 validate_max(limit, 100, "limit")?;
                 structured_result(search_sections(&self.config, &arguments.query, limit))
             }
+            "investigate" => {
+                let arguments: InvestigateArguments = parse_arguments(arguments)?;
+                validate_query(&arguments.query)?;
+                let max_tokens = arguments.max_tokens.unwrap_or(1_200);
+                validate_max(max_tokens, 8_192, "max_tokens")?;
+                validate_selected_paths(&arguments.paths)?;
+                let paths = arguments
+                    .paths
+                    .iter()
+                    .map(PathBuf::as_path)
+                    .collect::<Vec<_>>();
+                structured_result(build_context_for_paths(
+                    &self.config,
+                    &arguments.query,
+                    &paths,
+                    max_tokens,
+                ))
+            }
             "context" => {
                 let arguments: ContextArguments = parse_arguments(arguments)?;
                 validate_query(&arguments.query)?;
                 let max_tokens = arguments.max_tokens.unwrap_or(2_000);
                 validate_max(max_tokens, 8_192, "max_tokens")?;
-                structured_result(build_context(&self.config, &arguments.query, max_tokens))
+                if let Some(paths) = arguments.paths {
+                    validate_selected_paths(&paths)?;
+                    let paths = paths.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+                    structured_result(build_context_for_paths(
+                        &self.config,
+                        &arguments.query,
+                        &paths,
+                        max_tokens,
+                    ))
+                } else {
+                    structured_result(build_context(&self.config, &arguments.query, max_tokens))
+                }
             }
             "get_document" => {
                 let arguments: GetDocumentArguments = parse_arguments(arguments)?;
@@ -138,9 +175,18 @@ struct SearchArguments {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct InvestigateArguments {
+    query: String,
+    paths: Vec<PathBuf>,
+    max_tokens: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ContextArguments {
     query: String,
     max_tokens: Option<usize>,
+    paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -188,6 +234,14 @@ fn parse_arguments<T: DeserializeOwned>(arguments: Value) -> std::result::Result
 
 fn validate_query(query: &str) -> std::result::Result<(), McpError> {
     validate_max(query.len(), 16_384, "query bytes")
+}
+
+fn validate_selected_paths(paths: &[PathBuf]) -> std::result::Result<(), McpError> {
+    validate_max(paths.len(), 20, "paths")?;
+    for path in paths {
+        validate_max(path.to_string_lossy().len(), 4_096, "path bytes")?;
+    }
+    Ok(())
 }
 
 fn validate_max<T>(value: T, maximum: T, name: &str) -> std::result::Result<(), McpError>
@@ -241,6 +295,17 @@ fn tool_definitions() -> Vec<Tool> {
             object_schema(serde_json::json!({}), &[]),
         ),
         tool(
+            "subjects",
+            "Discover unique subjects with best-section citations",
+            object_schema(
+                serde_json::json!({
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10}
+                }),
+                &["query"],
+            ),
+        ),
+        tool(
             "search",
             "Search ranked heading-level sections with citations",
             object_schema(
@@ -252,12 +317,25 @@ fn tool_definitions() -> Vec<Tool> {
             ),
         ),
         tool(
+            "investigate",
+            "Build token-bounded cited evidence from required selected subject paths",
+            object_schema(
+                serde_json::json!({
+                    "query": {"type": "string"},
+                    "paths": {"type": "array", "items": {"type": "string", "maxLength": 4096}, "maxItems": 20},
+                    "max_tokens": {"type": "integer", "minimum": 0, "maximum": 8192, "default": 1200}
+                }),
+                &["query", "paths"],
+            ),
+        ),
+        tool(
             "context",
             "Build deduplicated token-bounded cited evidence",
             object_schema(
                 serde_json::json!({
                     "query": {"type": "string"},
-                    "max_tokens": {"type": "integer", "minimum": 0, "maximum": 8192, "default": 2000}
+                    "max_tokens": {"type": "integer", "minimum": 0, "maximum": 8192, "default": 2000},
+                    "paths": {"type": "array", "items": {"type": "string", "maxLength": 4096}, "maxItems": 20}
                 }),
                 &["query"],
             ),

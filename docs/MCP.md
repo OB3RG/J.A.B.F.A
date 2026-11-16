@@ -41,8 +41,10 @@ Successful calls return the shared versioned response in `structuredContent` and
 
 | Tool | Required arguments | Optional arguments and bounds |
 |---|---|---|
+| `subjects` | `query` | `limit`: default 10, maximum 100; query maximum 16 KiB |
 | `search` | `query` | `limit`: default 10, maximum 100; query maximum 16 KiB |
-| `context` | `query` | `max_tokens`: default 2,000, maximum 8,192; query maximum 16 KiB |
+| `investigate` | `query`, `paths` | `max_tokens`: default 1,200, maximum 8,192; required selected-subject paths, maximum 20 and 4 KiB each; query maximum 16 KiB |
+| `context` | `query` | `max_tokens`: default 2,000, maximum 8,192; `paths`: optional selected-subject paths, maximum 20 and 4 KiB each; query maximum 16 KiB |
 | `get_document` | `path` | `max_bytes`: default/maximum 1 MiB |
 | `get_section` | `path`, `start_line`, `end_line` | `max_bytes`: default/maximum 1 MiB; range must match an indexed section |
 | `related` | `path` | `max_depth`: default 2/max 8; `max_nodes`: default 50/max 100; `max_bytes`: default/max 65,536 |
@@ -55,9 +57,9 @@ A valid tool invocation whose operation fails—such as unsafe SQL, an excessive
 
 ## Security and dogfooding boundaries
 
-- MCP exposes only the seven read-only operations above; there are no MCP write, indexing, shell, or arbitrary-file tools.
+- MCP exposes only the nine read-only operations above; there are no MCP write, indexing, shell, or arbitrary-file tools.
 - SQL uses the shared read-only authorizer and row/byte/time limits. Attachments, pragmas, writes, schema changes, and file functions are denied.
-- Source paths are vault-relative and canonicalized. Traversal and symlink escapes are rejected.
+- Source paths are vault-relative and canonicalized. Traversal and symlink escapes are rejected. An explicitly empty `context.paths` or `investigate.paths` array returns empty evidence; omitting `context.paths` retains whole-vault context. `investigate` always requires the field so agents cannot accidentally investigate the whole vault.
 - The MCP client can read whatever the configured vault contains. Configure a dedicated vault and protect its path appropriately; do not register a vault containing secrets that the client should not receive.
 - stdio stdout is reserved for protocol messages. Do not print logs or diagnostics to stdout in the server.
 - Read-only dogfooding is appropriate now. Structured source writes and any replacement of the existing memory write workflow remain outside this boundary until M5 and a separate explicit migration.

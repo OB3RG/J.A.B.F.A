@@ -7,10 +7,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::{basic_vault, obsidian_vault, vault_manifest};
+use common::{basic_vault, obsidian_vault, subject_vault, vault_manifest};
 use jabfa::{
-    IndexConfig, RelatedLimits, SqlQueryLimits, build_context, get_document, get_section,
-    index_status, index_vault, query_sql, related_documents, search_sections,
+    IndexConfig, RelatedLimits, SqlQueryLimits, build_context, build_context_for_paths,
+    get_document, get_section, index_status, index_vault, query_sql, related_documents,
+    search_sections, search_subjects,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -213,6 +214,205 @@ fn at_17_mcp_and_cli_return_equivalent_semantic_results() {
             .arg("--json"),
     );
     assert_eq!(cli, expected);
+    assert_eq!(vault_manifest(&vault), before, "MCP changed source vault");
+}
+
+#[test]
+fn at_22_mcp_subjects_and_selected_context_match_shared_results() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = subject_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index subject MCP fixture");
+    let before = vault_manifest(&vault);
+    let mut server = McpChild::spawn(&vault, &database);
+    server.request(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "jabfa-test", "version": "0.1.0"}
+        }
+    }));
+    server.notify(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+
+    let tools = server.request(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
+    }));
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| { tools.iter().any(|tool| tool["name"] == "subjects") })
+    );
+
+    let expected = search_subjects(&config, "JABFA", 5).expect("library subjects");
+    let expected = serde_json::to_value(expected).expect("subjects JSON value");
+    let mcp = server.call_tool(
+        3,
+        "subjects",
+        serde_json::json!({"query": "JABFA", "limit": 5}),
+    );
+    assert_eq!(mcp["result"]["structuredContent"], expected);
+    assert_eq!(mcp["result"]["isError"], false);
+    let cli = cli_json(
+        Command::new(env!("CARGO_BIN_EXE_jabfa"))
+            .arg("subjects")
+            .arg(&vault)
+            .arg("JABFA")
+            .arg("--database")
+            .arg(&database)
+            .arg("--limit")
+            .arg("5")
+            .arg("--json"),
+    );
+    assert_eq!(cli, expected);
+
+    let selected = Path::new("wiki/learnings/jabfa.md");
+    let expected = build_context_for_paths(&config, "shared evidence", &[selected], 1_000)
+        .expect("library selected-subject context");
+    let expected = serde_json::to_value(expected).expect("selected context JSON value");
+    let mcp = server.call_tool(
+        4,
+        "context",
+        serde_json::json!({
+            "query": "shared evidence", "paths": [selected], "max_tokens": 1000
+        }),
+    );
+    assert_eq!(mcp["result"]["structuredContent"], expected);
+    let cli = cli_json(
+        Command::new(env!("CARGO_BIN_EXE_jabfa"))
+            .arg("context")
+            .arg(&vault)
+            .arg("shared evidence")
+            .arg("--database")
+            .arg(&database)
+            .arg("--path")
+            .arg(selected)
+            .arg("--max-tokens")
+            .arg("1000")
+            .arg("--json"),
+    );
+    assert_eq!(cli, expected);
+
+    let excessive_limit = server.call_tool(
+        5,
+        "subjects",
+        serde_json::json!({"query": "JABFA", "limit": 101}),
+    );
+    assert_eq!(excessive_limit["error"]["code"], -32602);
+    let excessive_paths = (0..21)
+        .map(|index| format!("{index}.md"))
+        .collect::<Vec<_>>();
+    let excessive_paths = server.call_tool(
+        6,
+        "context",
+        serde_json::json!({"query": "shared evidence", "paths": excessive_paths}),
+    );
+    assert_eq!(excessive_paths["error"]["code"], -32602);
+    let traversal = server.call_tool(
+        7,
+        "context",
+        serde_json::json!({"query": "shared evidence", "paths": ["../outside.md"]}),
+    );
+    assert_eq!(traversal["result"]["isError"], true);
+    assert!(
+        traversal["result"]["structuredContent"]["message"]
+            .as_str()
+            .expect("traversal message")
+            .contains("outside the configured vault")
+    );
+    let empty = server.call_tool(
+        8,
+        "context",
+        serde_json::json!({"query": "shared evidence", "paths": []}),
+    );
+    assert_eq!(empty["result"]["isError"], false);
+    assert_eq!(empty["result"]["structuredContent"]["included"], 0);
+    let alive = server.call_tool(9, "subjects", serde_json::json!({"query": "JABFA"}));
+    assert_eq!(alive["result"]["isError"], false);
+    assert_eq!(vault_manifest(&vault), before, "MCP changed source vault");
+}
+
+#[test]
+fn at_24_investigate_requires_selected_subjects_and_matches_cli() {
+    let temp = TempDir::new().expect("create temporary directory");
+    let vault = subject_vault(&temp);
+    let database = temp.path().join("index.sqlite3");
+    let config = IndexConfig::new(&vault, &database);
+    index_vault(&config).expect("index investigate MCP fixture");
+    let before = vault_manifest(&vault);
+    let mut server = McpChild::spawn(&vault, &database);
+    server.request(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "jabfa-test", "version": "0.1.0"}
+        }
+    }));
+    server.notify(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+
+    let missing = server.call_tool(
+        2,
+        "investigate",
+        serde_json::json!({"query": "shared evidence"}),
+    );
+    assert_eq!(missing["error"]["code"], -32602);
+
+    let selected = Path::new("wiki/learnings/jabfa.md");
+    let expected = build_context_for_paths(&config, "shared evidence", &[selected], 1_200)
+        .expect("library investigation");
+    let expected = serde_json::to_value(expected).expect("investigation JSON value");
+    let mcp = server.call_tool(
+        3,
+        "investigate",
+        serde_json::json!({"query": "shared evidence", "paths": [selected]}),
+    );
+    assert_eq!(mcp["result"]["structuredContent"], expected);
+    assert_eq!(mcp["result"]["isError"], false);
+    let cli = cli_json(
+        Command::new(env!("CARGO_BIN_EXE_jabfa"))
+            .arg("context")
+            .arg(&vault)
+            .arg("shared evidence")
+            .arg("--database")
+            .arg(&database)
+            .arg("--path")
+            .arg(selected)
+            .arg("--max-tokens")
+            .arg("1200")
+            .arg("--json"),
+    );
+    assert_eq!(cli, expected);
+
+    let excessive = (0..21)
+        .map(|index| format!("{index}.md"))
+        .collect::<Vec<_>>();
+    let excessive = server.call_tool(
+        4,
+        "investigate",
+        serde_json::json!({"query": "shared evidence", "paths": excessive}),
+    );
+    assert_eq!(excessive["error"]["code"], -32602);
+    let empty = server.call_tool(
+        5,
+        "investigate",
+        serde_json::json!({"query": "shared evidence", "paths": []}),
+    );
+    assert_eq!(empty["result"]["isError"], false);
+    assert_eq!(empty["result"]["structuredContent"]["included"], 0);
+    let alive = server.call_tool(6, "subjects", serde_json::json!({"query": "JABFA"}));
+    assert_eq!(alive["result"]["isError"], false);
     assert_eq!(vault_manifest(&vault), before, "MCP changed source vault");
 }
 
